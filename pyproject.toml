@@ -1,9 +1,0 @@
-[project]
-name = "ytui-go"
-version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
-requires-python = ">=3.12"
-dependencies = [
-    "git-filter-repo>=2.47.0",
-]
