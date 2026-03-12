@@ -1,0 +1,11 @@
+bin/
+dist/
+.vscode
+*.log
+*.tmp
+.DS_Store
+coverage.out
+vendor/
+.idea/
+.github
+
