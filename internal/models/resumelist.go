@@ -2,21 +2,13 @@ package models
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"github.com/mohsinkaleem/ytui-go/internal/download"
 	"github.com/mohsinkaleem/ytui-go/internal/store"
 	"github.com/mohsinkaleem/ytui-go/internal/styles"
 )
-
-// paddedResumeIcon returns a state icon padded to exactly 2 display columns.
-func paddedResumeIcon(icon string) string {
-	w := lipgloss.Width(icon)
-	if w < 2 {
-		return icon + strings.Repeat(" ", 2-w)
-	}
-	return icon
-}
 
 // ResumeListModel displays the list of incomplete (paused/failed/queued) downloads
 // so the user can inspect and re-queue them.
@@ -36,6 +28,15 @@ func NewResumeListModel() ResumeListModel {
 func (m *ResumeListModel) SetItems(items []store.DownloadRecord) {
 	m.Items = items
 	m.Selected = 0
+}
+
+// RemoveSelected drops the highlighted record from the list.
+func (m *ResumeListModel) RemoveSelected() {
+	if m.SelectedItem() == nil {
+		return
+	}
+	m.Items = slices.Delete(m.Items, m.Selected, m.Selected+1)
+	m.Selected = max(min(m.Selected, len(m.Items)-1), 0)
 }
 
 // SetSize updates the terminal dimensions.
@@ -71,118 +72,50 @@ func (m *ResumeListModel) View() string {
 	var b strings.Builder
 
 	count := len(m.Items)
-	headerText := fmt.Sprintf("Unfinished Downloads  (%d)", count)
-	b.WriteString(styles.SectionHeaderStyle.Render(headerText))
+	b.WriteString(styles.SectionHeaderStyle.Render("Unfinished downloads"))
+	b.WriteString(styles.MutedStyle.Render(fmt.Sprintf("  %d", count)))
 	b.WriteString("\n\n")
 
 	if count == 0 {
-		b.WriteString(styles.MutedStyle.Render("  No unfinished downloads."))
+		b.WriteString(styles.MutedStyle.Render("Nothing to resume."))
 		b.WriteString("\n")
 		return b.String()
 	}
 
-	// Each item takes ~3 visual lines (title + detail + gap)
-	linesPerItem := 3
-	maxShow := (m.Height - 8) / linesPerItem
-	if maxShow < 1 {
-		maxShow = 1
-	}
-	if maxShow > count {
-		maxShow = count
-	}
-
-	// Scrolling: keep selected item in view
-	start := 0
-	if m.Selected >= maxShow {
-		start = m.Selected - maxShow + 1
-	}
-	end := start + maxShow
-	if end > count {
-		end = count
-	}
-
-	maxTitleLen := m.Width - 16
-	if maxTitleLen < 20 {
-		maxTitleLen = 20
-	}
+	// Two lines per item; header, blank and position line take three.
+	rows := min(max((m.Height-3)/2, 1), count)
+	start := max(min(m.Selected-rows+1, count-rows), 0)
+	end := start + rows
+	width := m.Width - 3 // left border/indent
 
 	for i := start; i < end; i++ {
 		rec := m.Items[i]
-		isSelected := i == m.Selected
+		title := paddedIcon(download.TaskState(rec.State).Icon()) + " " + padRight(rec.State, 11) + " " + rec.Title
 
-		icon := paddedResumeIcon(resumeStateIcon(rec.State))
-		stateTag := fmt.Sprintf("%-12s", "["+rec.State+"]")
-
-		title := rec.Title
-		if len([]rune(title)) > maxTitleLen {
-			title = string([]rune(title)[:maxTitleLen-3]) + "..."
+		detail := "format " + rec.FormatID
+		switch {
+		case rec.State == string(download.StateFailed) && rec.Error != "":
+			detail += " • " + rec.Error
+		case rec.OutputPath != "":
+			detail += " • → " + styles.TruncateLeft(rec.OutputPath, width-len(detail)-8)
 		}
 
-		// Build detail parts on separate lines for clarity
-		var detailParts []string
-		if rec.FormatID != "" {
-			detailParts = append(detailParts, "fmt:"+rec.FormatID)
-		}
-		if rec.OutputPath != "" {
-			path := rec.OutputPath
-			maxPath := m.Width - 10
-			if maxPath > 70 {
-				maxPath = 70
-			}
-			if len(path) > maxPath {
-				path = "…" + path[len(path)-maxPath+1:]
-			}
-			detailParts = append(detailParts, "→ "+path)
-		}
-		detail := strings.Join(detailParts, "  •  ")
-
-		if isSelected {
-			titleLine := fmt.Sprintf("%s %s %s", icon, stateTag, title)
-			rendered := styles.ListSelectedTitleStyle.Render(titleLine)
-			if detail != "" {
-				rendered += "\n" + styles.ListSelectedDescStyle.Render("     "+detail)
-			}
-			b.WriteString(styles.ListSelectedItemStyle.Render(rendered))
+		titleLine := styles.Truncate(title, width)
+		detailLine := styles.Truncate("   "+detail, width)
+		if i == m.Selected {
+			b.WriteString(styles.ListSelectedItemStyle.Render(
+				styles.ListSelectedTitleStyle.Render(titleLine) + "\n" + styles.ListSelectedDescStyle.Render(detailLine)))
 		} else {
-			titleLine := fmt.Sprintf("%s %s ", icon, stateTag)
-			// 3 spaces matches ListSelectedItemStyle indent (border 1 + padding 2)
-			b.WriteString("   " + styles.ListTitleStyle.Render(titleLine) + styles.ListTitleStyle.Render(title))
-			if detail != "" {
-				b.WriteString("\n" + "   " + styles.ListDescStyle.Render("     "+detail))
-			}
+			b.WriteString(styles.ListItemStyle.Render(
+				styles.TextStyle.Render(titleLine) + "\n" + styles.ListDescStyle.Render(detailLine)))
 		}
 		b.WriteString("\n")
 	}
 
-	if count > end {
-		b.WriteString(styles.MutedStyle.Render(fmt.Sprintf("\n  … and %d more", count-end)))
+	if rows < count {
+		b.WriteString(styles.MutedStyle.Render(fmt.Sprintf("   %d–%d of %d", start+1, end, count)))
 		b.WriteString("\n")
 	}
-
-	// Footer hints
-	b.WriteString("\n")
-	b.WriteString(styles.MutedStyle.Render("  enter: resume selected  •  d: resume all  •  x: delete  •  esc: back"))
-	b.WriteString("\n")
 
 	return b.String()
-}
-
-// resumeStateIcon returns a unicode icon for a stored state string.
-func resumeStateIcon(state string) string {
-	switch state {
-	case "queued":
-		return "○"
-	case "downloading":
-		return "↓"
-	case "completed":
-		return "✓"
-	case "failed":
-		return "✗"
-	case "cancelled":
-		return "→"
-	case "paused":
-		return "⏸"
-	default:
-		return "?"
-	}
 }

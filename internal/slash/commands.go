@@ -11,27 +11,26 @@ type Command struct {
 	Name        string
 	Description string
 	Args        string
-	Handler     func(args string) interface{}
 }
 
 // Registry holds all registered slash commands
 type Registry struct {
 	commands []Command
-	names    []string
 }
 
 // NewRegistry creates a command registry with built-in commands
 func NewRegistry() *Registry {
 	r := &Registry{}
 	r.Register(Command{Name: "download", Description: "Quick-download with best format", Args: "<url>"})
-	r.Register(Command{Name: "playlist", Description: "Open playlist browser", Args: "<url>"})
 	r.Register(Command{Name: "play", Description: "Stream in mpv", Args: "<url>"})
+	r.Register(Command{Name: "playlist", Description: "Open playlist browser", Args: "<url>"})
+	r.Register(Command{Name: "downloads", Description: "Show the download queue"})
 	r.Register(Command{Name: "resume", Description: "Show & re-queue unfinished downloads"})
-	r.Register(Command{Name: "downloaddir", Description: "Set download folder", Args: "<path>"})
-	r.Register(Command{Name: "cookies", Description: "Set browser or cookies.txt for auth", Args: "<browser|path>"})
-	r.Register(Command{Name: "help", Description: "Show command list"})
 	r.Register(Command{Name: "theme", Description: "Switch color theme"})
-	r.Register(Command{Name: "clear", Description: "Clear search history"})
+	r.Register(Command{Name: "downloaddir", Description: "Set download folder", Args: "<path>"})
+	r.Register(Command{Name: "cookies", Description: "Use browser cookies or a cookies.txt", Args: "<browser|path|off>"})
+	r.Register(Command{Name: "clear", Description: "Clear history"})
+	r.Register(Command{Name: "help", Description: "List all commands"})
 	r.Register(Command{Name: "exit", Description: "Exit app"})
 	return r
 }
@@ -39,7 +38,6 @@ func NewRegistry() *Registry {
 // Register adds a command to the registry
 func (r *Registry) Register(cmd Command) {
 	r.commands = append(r.commands, cmd)
-	r.names = append(r.names, cmd.Name)
 }
 
 // Match returns fuzzy-matched commands for the given input
@@ -49,7 +47,7 @@ func (r *Registry) Match(input string) []Command {
 		return r.commands
 	}
 
-	matches := fuzzy.Find(input, r.names)
+	matches := fuzzy.FindFrom(input, r)
 	result := make([]Command, 0, len(matches))
 	for _, m := range matches {
 		result = append(result, r.commands[m.Index])
@@ -86,10 +84,10 @@ func ParseInput(input string) (name, args string) {
 
 // String implements fuzzy.Source
 func (r *Registry) String(i int) string {
-	return r.names[i]
+	return r.commands[i].Name
 }
 
 // Len implements fuzzy.Source
 func (r *Registry) Len() int {
-	return len(r.names)
+	return len(r.commands)
 }

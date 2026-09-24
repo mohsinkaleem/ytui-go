@@ -35,6 +35,7 @@ func TestIsPlaylistURL(t *testing.T) {
 	}{
 		{"https://www.youtube.com/playlist?list=PLabc", true},
 		{"https://www.youtube.com/watch?v=abc&list=PLabc", true},
+		{"https://youtu.be/abc?list=PLabc", true},
 		{"https://www.youtube.com/watch?v=abc", false},
 		{"some query", false},
 		{"", false},
@@ -45,6 +46,41 @@ func TestIsPlaylistURL(t *testing.T) {
 				t.Errorf("IsPlaylistURL(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSearchTarget(t *testing.T) {
+	tests := []struct {
+		sort string
+		want string
+	}{
+		{"relevance", "ytsearch25:lo fi"},
+		{"", "ytsearch25:lo fi"},
+		{"upload_date", "https://www.youtube.com/results?search_query=lo+fi&sp=CAISAhAB"},
+		{"view_count", "https://www.youtube.com/results?search_query=lo+fi&sp=CAMSAhAB"},
+		{"rating", "https://www.youtube.com/results?search_query=lo+fi&sp=CAESAhAB"},
+	}
+	for _, tt := range tests {
+		if got := searchTarget("lo fi", tt.sort); got != tt.want {
+			t.Errorf("searchTarget(%q) = %q, want %q", tt.sort, got, tt.want)
+		}
+	}
+}
+
+func TestEntryURL(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry VideoInfo
+		want  string
+	}{
+		{"webpage url", VideoInfo{WebpageURL: "https://a", URL: "https://b", ID: "c"}, "https://a"},
+		{"flat url", VideoInfo{URL: "https://www.youtube.com/shorts/abc", ID: "abc"}, "https://www.youtube.com/shorts/abc"},
+		{"id only", VideoInfo{ID: "abc"}, "https://www.youtube.com/watch?v=abc"},
+	}
+	for _, tt := range tests {
+		if got := entryURL(tt.entry); got != tt.want {
+			t.Errorf("%s: entryURL() = %q, want %q", tt.name, got, tt.want)
+		}
 	}
 }
 

@@ -160,23 +160,35 @@ func TestFormatETA(t *testing.T) {
 	}
 }
 
-func TestHumanBytes(t *testing.T) {
+func TestParseProgressLineTitle(t *testing.T) {
+	p, err := ParseProgressLine("YTPROG|1|2|2|1|1|downloading|Live | Unplugged")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Title != "Live | Unplugged" {
+		t.Errorf("Title = %q, want %q", p.Title, "Live | Unplugged")
+	}
+
+	p, _ = ParseProgressLine("YTPROG|1|2|2|1|1|downloading|NA")
+	if p.Title != "" {
+		t.Errorf("Title = %q, want empty for NA", p.Title)
+	}
+}
+
+func TestParseOutputPath(t *testing.T) {
 	tests := []struct {
-		bytes int64
-		want  string
+		line string
+		want string
 	}{
-		{0, "0 B"},
-		{500, "500 B"},
-		{1024, "1.0 KB"},
-		{1536, "1.5 KB"},
-		{1048576, "1.0 MB"},
-		{1073741824, "1.0 GB"},
+		{"[download] Destination: /tmp/a [x].f137.mp4", "/tmp/a [x].f137.mp4"},
+		{`[Merger] Merging formats into "/tmp/a [x].mp4"`, "/tmp/a [x].mp4"},
+		{"[download] /tmp/a [x].mp4 has already been downloaded", "/tmp/a [x].mp4"},
+		{"[youtube] x: Downloading webpage", ""},
+		{"", ""},
 	}
 	for _, tt := range tests {
-		t.Run(tt.want, func(t *testing.T) {
-			if got := HumanBytes(tt.bytes); got != tt.want {
-				t.Errorf("HumanBytes(%d) = %q, want %q", tt.bytes, got, tt.want)
-			}
-		})
+		if got := ParseOutputPath(tt.line); got != tt.want {
+			t.Errorf("ParseOutputPath(%q) = %q, want %q", tt.line, got, tt.want)
+		}
 	}
 }

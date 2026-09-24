@@ -1,22 +1,18 @@
 package ytdlp
 
-import "time"
-
 // VideoInfo represents metadata for a single video
 type VideoInfo struct {
 	ID             string   `json:"id"`
 	Title          string   `json:"title"`
 	Channel        string   `json:"channel"`
-	ChannelURL     string   `json:"channel_url"`
+	Uploader       string   `json:"uploader"`
 	Duration       float64  `json:"duration"`
 	DurationString string   `json:"duration_string"`
 	ViewCount      int64    `json:"view_count"`
-	UploadDate     string   `json:"upload_date"`
-	Description    string   `json:"description"`
-	Thumbnail      string   `json:"thumbnail"`
 	WebpageURL     string   `json:"webpage_url"`
 	Formats        []Format `json:"formats"`
 	IsLive         bool     `json:"is_live"`
+	LiveStatus     string   `json:"live_status"`
 	URL            string   `json:"url"`
 }
 
@@ -50,12 +46,10 @@ type PlaylistInfo struct {
 
 // DownloadOpts configures yt-dlp download behavior
 type DownloadOpts struct {
-	EmbedSubs      bool
-	EmbedMetadata  bool
-	EmbedChapters  bool
-	OutputTemplate string
-	OutputDir      string
-	ContinueDL     bool // for resume
+	EmbedSubs     bool
+	EmbedMetadata bool
+	EmbedChapters bool
+	OutputDir     string
 }
 
 // Progress represents parsed progress data from yt-dlp
@@ -66,12 +60,7 @@ type Progress struct {
 	ETA             string
 	Status          string
 	Percent         float64
-}
-
-// SearchResult wraps search output for easier processing
-type SearchResult struct {
-	Videos  []VideoInfo
-	Fetched time.Time
+	Title           string
 }
 
 // IsVideoOnly checks if format has only video

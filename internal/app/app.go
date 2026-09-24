@@ -3,7 +3,6 @@ package app
 import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/mohsinkaleem/ytui-go/internal/download"
 	"github.com/mohsinkaleem/ytui-go/internal/models"
 	"github.com/mohsinkaleem/ytui-go/internal/slash"
@@ -14,13 +13,24 @@ import (
 	"github.com/mohsinkaleem/ytui-go/internal/ytdlp"
 )
 
+// Config holds the root model's dependencies and startup settings.
+type Config struct {
+	Store       *store.Store // nil disables persistence
+	Client      *ytdlp.Client
+	Downloads   *download.Manager
+	Settings    store.Settings
+	DownloadDir string // session override for Settings.DownloadDir
+	Notice      string // shown as a toast on startup
+}
+
 // Model is the root bubbletea model
 type Model struct {
 	// State machine
-	State     types.State
-	PrevState types.State
-	Width     int
-	Height    int
+	State      types.State
+	PrevState  types.State // screen to return to from Loading, Download and VideoPlaying
+	FormatBack types.State // screen to return to from FormatList
+	Width      int
+	Height     int
 
 	// Sub-models (flat composition)
 	Search     models.SearchModel
@@ -30,119 +40,132 @@ type Model struct {
 	Player     models.PlayerModel
 	ResumeList models.ResumeListModel
 
-	// Shared state
-	SelectedVideo  types.VideoItem
-	SelectedVideos []types.VideoItem // for batch format download
-	CurrentQuery   string
-
 	// Loading
-	Spinner     spinner.Model
-	LoadingType string
+	Spinner    spinner.Model
+	LoadingMsg string
 
-	// UX
-	ErrMsg   string
-	ToastMsg string
+	// Status bar toast
+	Toast    string
+	ToastErr bool
+	toastSeq int
 
-	// Managers
-	SearchManager  *utils.SearchManager
-	FormatsManager *utils.FormatsManager
-	PlaylistMgr    *utils.PlaylistManager
-	DownloadMgr    *download.Manager
-	PlayerManager  *utils.PlayerManager
+	ticking bool // a DownloadTickMsg is pending
 
-	// Persistence
-	Store *store.Store
+	Settings    store.Settings
+	dirOverride string
 
-	// Slash commands
+	Fetcher       *utils.Fetcher
+	DownloadMgr   *download.Manager
+	PlayerManager *utils.PlayerManager
+	Store         *store.Store
 	SlashRegistry *slash.Registry
-
-	// yt-dlp client
-	YtdlpClient *ytdlp.Client
-
-	// Program reference (set after init)
-	Program *tea.Program
+	YtdlpClient   *ytdlp.Client
 }
 
 // New creates a new root model
-func New(st *store.Store, client *ytdlp.Client) Model {
-	registry := slash.NewRegistry()
-
+func New(cfg Config) Model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
-	s.Style = lipgloss.NewStyle().Foreground(styles.CurrentTheme.Pink)
+	s.Style = styles.SpinnerStyle
 
-	searchMgr := utils.NewSearchManager(client)
-	formatsMgr := utils.NewFormatsManager(client)
-	playlistMgr := utils.NewPlaylistManager(client)
-	playerMgr := utils.NewPlayerManager("")
-
-	// Download manager
-	var dlMgr *download.Manager
-	if st != nil {
-		settings, _ := st.GetSettings()
-		dlMgr = download.NewManager(settings.MaxConcurrent, client, st)
-	} else {
-		dlMgr = download.NewManager(3, client, nil)
+	m := Model{
+		State:         types.StateSearchInput,
+		PrevState:     types.StateSearchInput,
+		FormatBack:    types.StateSearchInput,
+		Search:        models.NewSearchModel(),
+		VideoList:     models.NewVideoListModel(),
+		FormatList:    models.NewFormatListModel(),
+		Download:      models.NewDownloadModel(),
+		Player:        models.NewPlayerModel(),
+		ResumeList:    models.NewResumeListModel(),
+		Spinner:       s,
+		Toast:         cfg.Notice,
+		Settings:      cfg.Settings,
+		dirOverride:   cfg.DownloadDir,
+		Fetcher:       utils.NewFetcher(cfg.Client),
+		DownloadMgr:   cfg.Downloads,
+		PlayerManager: utils.NewPlayerManager(cfg.Settings.MpvPath),
+		Store:         cfg.Store,
+		SlashRegistry: slash.NewRegistry(),
+		YtdlpClient:   cfg.Client,
 	}
+	m.syncSearch()
 
-	model := Model{
-		State:          types.StateSearchInput,
-		Search:         models.NewSearchModel(registry),
-		VideoList:      models.NewVideoListModel(),
-		FormatList:     models.NewFormatListModel(),
-		Download:       models.NewDownloadModel(),
-		Player:         models.NewPlayerModel(),
-		ResumeList:     models.NewResumeListModel(),
-		Spinner:        s,
-		SearchManager:  searchMgr,
-		FormatsManager: formatsMgr,
-		PlaylistMgr:    playlistMgr,
-		DownloadMgr:    dlMgr,
-		PlayerManager:  playerMgr,
-		Store:          st,
-		SlashRegistry:  registry,
-		YtdlpClient:    client,
-	}
-
-	// Load search history from store
-	if st != nil {
-		// Load embed settings from store
-		if settings, err := st.GetSettings(); err == nil {
-			model.Search.EmbedSubs = settings.EmbedSubs
-			model.Search.EmbedMetadata = settings.EmbedMetadata
-			model.Search.EmbedChapters = settings.EmbedChapters
-		}
-
-		entries, err := st.GetSearchHistory(50)
-		if err == nil {
-			seen := make(map[string]bool)
-			for _, e := range entries {
-				q := e.Title
+	if cfg.Store != nil {
+		if entries, err := cfg.Store.GetSearchHistory(50); err == nil {
+			// Entries are newest first; push oldest first so the newest ends on top.
+			for i := len(entries) - 1; i >= 0; i-- {
+				q := entries[i].Title
 				if q == "" {
-					q = e.URL
+					q = entries[i].URL
 				}
-				if q != "" && !seen[q] {
-					seen[q] = true
-					model.Search.History = append(model.Search.History, q)
+				if q != "" {
+					m.Search.PushHistory(q)
 				}
 			}
 		}
 	}
 
-	return model
+	return m
 }
 
 // Init implements tea.Model
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(
-		m.Spinner.Tick,
-		m.Search.Input.Focus(),
-	)
+	if m.Toast != "" {
+		return clearToastAfter(m.toastSeq)
+	}
+	return nil
 }
 
-// SetProgram sets the program reference on the model and managers
-func (m *Model) SetProgram(p *tea.Program) {
-	m.Program = p
-	m.DownloadMgr.SetProgram(p)
-	m.DownloadMgr.Start()
+// downloadDir returns the folder downloads are saved to.
+func (m *Model) downloadDir() string {
+	switch {
+	case m.dirOverride != "":
+		return m.dirOverride
+	case m.Settings.DownloadDir != "":
+		return m.Settings.DownloadDir
+	}
+	return store.DefaultSettings().DownloadDir
+}
+
+func (m *Model) downloadOpts() ytdlp.DownloadOpts {
+	return ytdlp.DownloadOpts{
+		EmbedSubs:     m.Settings.EmbedSubs,
+		EmbedMetadata: m.Settings.EmbedMetadata,
+		EmbedChapters: m.Settings.EmbedChapters,
+		OutputDir:     m.downloadDir(),
+	}
+}
+
+// saveSettings persists the settings and refreshes the search screen.
+func (m *Model) saveSettings() {
+	m.syncSearch()
+	if m.Store != nil {
+		m.Store.SaveSettings(m.Settings)
+	}
+}
+
+// syncSearch copies the settings shown on the search screen.
+func (m *Model) syncSearch() {
+	m.Search.EmbedSubs = m.Settings.EmbedSubs
+	m.Search.EmbedMetadata = m.Settings.EmbedMetadata
+	m.Search.EmbedChapters = m.Settings.EmbedChapters
+	m.Search.DownloadDir = m.downloadDir()
+	m.Search.Cookies = cookiesLabel(m.Settings)
+}
+
+func cookiesLabel(s store.Settings) string {
+	if s.CookiesFrom != "" {
+		return s.CookiesFrom
+	}
+	return s.CookiesFile
+}
+
+// applyTheme pushes the current theme into components that cache styles.
+func (m *Model) applyTheme() {
+	m.Spinner.Style = styles.SpinnerStyle
+	m.Search.ApplyTheme()
+	m.VideoList.ApplyTheme()
+	m.FormatList.ApplyTheme()
+	m.Download.ApplyTheme()
 }

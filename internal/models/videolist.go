@@ -3,10 +3,10 @@ package models
 import (
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mohsinkaleem/ytui-go/internal/styles"
 	"github.com/mohsinkaleem/ytui-go/internal/types"
 )
@@ -33,72 +33,63 @@ func (d videoItemDelegate) Render(w io.Writer, m list.Model, index int, listItem
 		return
 	}
 
-	isSelected := index == m.Index()
+	titleStyle, descStyle := styles.ListTitleStyle, styles.ListDescStyle
+	if index == m.Index() {
+		titleStyle, descStyle = styles.ListSelectedTitleStyle, styles.ListSelectedDescStyle
+	}
+	width := m.Width() - 3 // left border/indent
 
-	// Title line
-	title := item.Title
-	maxLen := m.Width() - 6
-	if maxLen < 10 {
-		maxLen = 10
-	}
-	if len([]rune(title)) > maxLen {
-		title = string([]rune(title)[:maxLen-3]) + "..."
+	title := titleStyle.Render(styles.Truncate(item.Title, width))
+	if item.Selected {
+		title = styles.MultiSelectCheckStyle.Render("✓ ") + titleStyle.Render(styles.Truncate(item.Title, width-2))
 	}
 
-	// Detail line
-	details := []string{}
-	if item.Channel != "" {
-		details = append(details, item.Channel)
+	detail := descStyle.Render(styles.Truncate(videoDetails(item), width))
+	if item.IsLive {
+		detail = styles.LiveBadgeStyle.Render("● LIVE ") + descStyle.Render(styles.Truncate(videoDetails(item), width-7))
 	}
-	if item.DurationString != "" {
-		details = append(details, item.DurationString)
-	}
-	if item.ViewCount > 0 {
-		details = append(details, formatViewCount(item.ViewCount)+" views")
-	}
-	detail := strings.Join(details, " • ")
 
-	if isSelected {
-		titleStr := styles.ListSelectedTitleStyle.Render(title)
-		detailStr := styles.ListSelectedDescStyle.Render(detail)
-		content := titleStr + "\n" + detailStr
-
-		rendered := styles.ListSelectedItemStyle.Render(content)
-		fmt.Fprint(w, rendered)
+	if index == m.Index() {
+		fmt.Fprint(w, styles.ListSelectedItemStyle.Render(title+"\n"+detail))
 	} else {
-		prefix := "   "
-		if item.Selected {
-			prefix = " " + styles.MultiSelectCheckStyle.Render("✓") + " "
-		}
-
-		titleStr := styles.ListTitleStyle.Render(title)
-		detailStr := styles.ListDescStyle.Render(detail)
-
-		fmt.Fprint(w, prefix+titleStr+"\n"+prefix+detailStr)
+		fmt.Fprint(w, styles.ListItemStyle.Render(title+"\n"+detail))
 	}
 }
 
 // NewVideoListModel creates a new video list model
 func NewVideoListModel() VideoListModel {
-	delegate := videoItemDelegate{}
-	l := list.New([]list.Item{}, delegate, 0, 0)
-	l.SetShowTitle(false)
-	l.SetShowStatusBar(false)
+	l := newList(videoItemDelegate{})
 	l.SetFilteringEnabled(true)
-	l.SetShowHelp(false)
+	l.SetStatusBarItemName("video", "videos")
+	l.FilterInput.Prompt = "Filter: "
+	l.Styles.TitleBar = l.Styles.TitleBar.PaddingLeft(3) // align the filter with the items
 
-	// Style the filter
-	l.FilterInput.PromptStyle = styles.InputPromptStyle
-	l.FilterInput.TextStyle = styles.InputStyle
-
-	return VideoListModel{
-		List: l,
-	}
+	m := VideoListModel{List: l}
+	m.ApplyTheme()
+	return m
 }
 
-// SetItems sets the list items
+// newList creates a bare list whose keys don't clash with the app's own.
+func newList(delegate list.ItemDelegate) list.Model {
+	l := list.New(nil, delegate, 0, 0)
+	l.SetShowTitle(false)
+	l.SetShowStatusBar(false)
+	l.SetShowHelp(false)
+	l.DisableQuitKeybindings()         // the app owns quitting (ctrl+c); "q" must not exit
+	l.KeyMap.GoToStart.SetKeys("home") // "g" opens the downloads screen
+	return l
+}
+
+// ApplyTheme re-applies the current theme to the filter input.
+func (m *VideoListModel) ApplyTheme() {
+	styleInput(&m.List.FilterInput)
+}
+
+// SetItems replaces the list contents and resets filter and cursor
 func (m *VideoListModel) SetItems(items []list.Item, title, query string) {
+	m.List.ResetFilter()
 	m.List.SetItems(items)
+	m.List.ResetSelected()
 	m.Title = title
 	m.Query = query
 }
@@ -107,7 +98,7 @@ func (m *VideoListModel) SetItems(items []list.Item, title, query string) {
 func (m *VideoListModel) SetSize(w, h int) {
 	m.Width = w
 	m.Height = h
-	m.List.SetSize(w, h-4) // reserve space for header
+	m.List.SetSize(w, h-1) // header; the list's own first row is the blank/filter line
 }
 
 // SelectedVideo returns the currently highlighted video
@@ -121,36 +112,39 @@ func (m *VideoListModel) SelectedVideo() (types.VideoItem, bool) {
 }
 
 // ToggleSelected toggles multi-select on the current item
-func (m *VideoListModel) ToggleSelected() {
-	idx := m.List.Index()
+func (m *VideoListModel) ToggleSelected() tea.Cmd {
+	idx := m.List.GlobalIndex() // Index() is relative to the filtered view
 	items := m.List.Items()
 	if idx < 0 || idx >= len(items) {
-		return
+		return nil
 	}
-	if v, ok := items[idx].(types.VideoItem); ok {
-		v.Selected = !v.Selected
-		m.List.SetItem(idx, v)
+	v, ok := items[idx].(types.VideoItem)
+	if !ok {
+		return nil
 	}
+	v.Selected = !v.Selected
+	return m.List.SetItem(idx, v)
 }
 
-// SelectAll toggles all items
-func (m *VideoListModel) SelectAll() {
-	items := m.List.Items()
-	// Check if all are already selected
-	allSelected := true
-	for _, item := range items {
-		if v, ok := item.(types.VideoItem); ok && !v.Selected {
-			allSelected = false
-			break
-		}
-	}
+// SelectAll selects every item, or clears the selection if all are selected
+func (m *VideoListModel) SelectAll() tea.Cmd {
+	return m.setAllSelected(m.SelectedCount() < len(m.List.Items()))
+}
 
-	for i, item := range items {
-		if v, ok := item.(types.VideoItem); ok {
-			v.Selected = !allSelected
-			m.List.SetItem(i, v)
+// ClearSelections deselects all items in the list
+func (m *VideoListModel) ClearSelections() tea.Cmd {
+	return m.setAllSelected(false)
+}
+
+func (m *VideoListModel) setAllSelected(selected bool) tea.Cmd {
+	var cmd tea.Cmd
+	for i, item := range m.List.Items() {
+		if v, ok := item.(types.VideoItem); ok && v.Selected != selected {
+			v.Selected = selected
+			cmd = m.List.SetItem(i, v) // each returns the same refilter command
 		}
 	}
+	return cmd
 }
 
 // GetSelectedVideos returns all multi-selected videos
@@ -164,36 +158,33 @@ func (m *VideoListModel) GetSelectedVideos() []types.VideoItem {
 	return selected
 }
 
-// ClearSelections deselects all items in the list
-func (m *VideoListModel) ClearSelections() {
-	for i, item := range m.List.Items() {
-		if v, ok := item.(types.VideoItem); ok && v.Selected {
-			v.Selected = false
-			m.List.SetItem(i, v)
-		}
-	}
+// SelectedCount returns the number of multi-selected videos
+func (m *VideoListModel) SelectedCount() int {
+	return len(m.GetSelectedVideos())
 }
 
 // View renders the video list screen
 func (m *VideoListModel) View() string {
-	var b strings.Builder
-
-	// Header
-	headerText := "Search Results"
-	if m.Query != "" {
-		headerText = fmt.Sprintf("Search Results for: \"%s\"", m.Query)
+	header := m.Title
+	if header == "" {
+		header = fmt.Sprintf("Results for %q", m.Query)
 	}
-	if m.Title != "" {
-		headerText = m.Title
+
+	n := len(m.List.Items())
+	meta := fmt.Sprintf("  %d videos", n)
+	if n == 1 {
+		meta = "  1 video"
 	}
-	header := styles.SectionHeaderStyle.Render(headerText)
-	b.WriteString(header)
-	b.WriteString("\n\n")
+	selected := ""
+	if count := m.SelectedCount(); count > 0 {
+		selected = fmt.Sprintf(" · %d selected", count)
+	}
 
-	// List
-	b.WriteString(m.List.View())
-
-	return b.String()
+	header = styles.Truncate(header, m.Width-lipgloss.Width(meta+selected))
+	return styles.SectionHeaderStyle.Render(header) +
+		styles.MutedStyle.Render(meta) +
+		styles.MultiSelectCheckStyle.Render(selected) +
+		"\n" + m.List.View()
 }
 
 // IsFiltering returns true if the list is in filter mode

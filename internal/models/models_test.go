@@ -4,16 +4,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mohsinkaleem/ytui-go/internal/slash"
+	"github.com/charmbracelet/bubbles/list"
 	"github.com/mohsinkaleem/ytui-go/internal/types"
 )
 
 func TestNewSearchModelDefaults(t *testing.T) {
-	r := slash.NewRegistry()
-	m := NewSearchModel(r)
+	m := NewSearchModel()
 
-	if m.SortBy != types.SortRelevance {
-		t.Errorf("default SortBy = %q, want %q", m.SortBy, types.SortRelevance)
+	if m.SortBy() != types.SortRelevance {
+		t.Errorf("default SortBy = %q, want %q", m.SortBy(), types.SortRelevance)
 	}
 	if m.SortIndex != 0 {
 		t.Errorf("default SortIndex = %d, want 0", m.SortIndex)
@@ -26,9 +25,42 @@ func TestNewSearchModelDefaults(t *testing.T) {
 	}
 }
 
+func TestSearchModelCycleSort(t *testing.T) {
+	m := NewSearchModel()
+	m.CycleSort(-1)
+	if m.SortBy() != types.SortRating {
+		t.Errorf("CycleSort(-1) = %q, want %q", m.SortBy(), types.SortRating)
+	}
+	m.CycleSort(1)
+	if m.SortBy() != types.SortRelevance {
+		t.Errorf("CycleSort(1) = %q, want %q", m.SortBy(), types.SortRelevance)
+	}
+}
+
+func TestSearchModelHistory(t *testing.T) {
+	m := NewSearchModel()
+	m.PushHistory("a")
+	m.PushHistory("b")
+	m.PushHistory("a")
+	if strings.Join(m.History, ",") != "a,b" {
+		t.Fatalf("History = %v, want [a b]", m.History)
+	}
+
+	m.HistoryPrev()
+	m.HistoryPrev()
+	m.HistoryPrev() // stays on the oldest entry
+	if m.Input.Value() != "b" {
+		t.Errorf("after HistoryPrev input = %q, want b", m.Input.Value())
+	}
+	m.HistoryNext()
+	m.HistoryNext()
+	if m.Input.Value() != "" || m.HistoryIndex != -1 {
+		t.Errorf("after HistoryNext past newest input = %q, index = %d", m.Input.Value(), m.HistoryIndex)
+	}
+}
+
 func TestSearchModelSetSize(t *testing.T) {
-	r := slash.NewRegistry()
-	m := NewSearchModel(r)
+	m := NewSearchModel()
 	m.SetSize(80, 24)
 
 	if m.Width != 80 {
@@ -43,8 +75,7 @@ func TestSearchModelSetSize(t *testing.T) {
 }
 
 func TestSearchModelViewNonEmpty(t *testing.T) {
-	r := slash.NewRegistry()
-	m := NewSearchModel(r)
+	m := NewSearchModel()
 	m.SetSize(80, 24)
 	view := m.View()
 
@@ -54,8 +85,7 @@ func TestSearchModelViewNonEmpty(t *testing.T) {
 }
 
 func TestSearchModelViewShowsError(t *testing.T) {
-	r := slash.NewRegistry()
-	m := NewSearchModel(r)
+	m := NewSearchModel()
 	m.SetSize(80, 24)
 	m.ErrMsg = "something broke"
 	view := m.View()
@@ -76,21 +106,48 @@ func TestVideoListSetItems(t *testing.T) {
 	m := NewVideoListModel()
 	m.SetSize(80, 24)
 
-	items := []types.VideoItem{
-		{ID: "1", Title: "Video A"},
-		{ID: "2", Title: "Video B"},
-	}
-	listItems := make([]interface{ FilterValue() string }, len(items))
-	for i, v := range items {
-		listItems[i] = v
-	}
-	// Use the actual list.Item interface
-	m.SetItems(nil, "Test Playlist", "query")
+	m.SetItems([]list.Item{types.VideoItem{ID: "1", Title: "Video A"}}, "Test Playlist", "query")
 	if m.Title != "Test Playlist" {
 		t.Errorf("Title = %q, want %q", m.Title, "Test Playlist")
 	}
 	if m.Query != "query" {
 		t.Errorf("Query = %q, want %q", m.Query, "query")
+	}
+	if len(m.List.Items()) != 1 {
+		t.Errorf("items = %d, want 1", len(m.List.Items()))
+	}
+}
+
+func TestVideoListSelection(t *testing.T) {
+	m := NewVideoListModel()
+	m.SetSize(80, 24)
+	m.SetItems([]list.Item{
+		types.VideoItem{ID: "1", Title: "A"},
+		types.VideoItem{ID: "2", Title: "B"},
+	}, "", "q")
+
+	m.ToggleSelected()
+	if got := m.GetSelectedVideos(); len(got) != 1 || got[0].ID != "1" {
+		t.Fatalf("after toggle selected = %v, want [1]", got)
+	}
+	m.SelectAll()
+	if m.SelectedCount() != 2 {
+		t.Errorf("after SelectAll count = %d, want 2", m.SelectedCount())
+	}
+	m.SelectAll() // all selected -> clears
+	if m.SelectedCount() != 0 {
+		t.Errorf("second SelectAll count = %d, want 0", m.SelectedCount())
+	}
+	if !strings.Contains(m.View(), "2 videos") {
+		t.Error("header should show the video count")
+	}
+}
+
+func TestVideoListQuitKeyDisabled(t *testing.T) {
+	m := NewVideoListModel()
+	m.SetItems([]list.Item{types.VideoItem{ID: "1", Title: "A"}}, "", "q") // SetItems re-evaluates key bindings
+	if m.List.KeyMap.Quit.Enabled() {
+		t.Error("the list's own quit binding (q) must be disabled")
 	}
 }
 
@@ -149,18 +206,46 @@ func TestFormatListTabCycling(t *testing.T) {
 func TestFormatListGetFormatID(t *testing.T) {
 	m := NewFormatListModel()
 
-	// No items selected, should return "best"
-	id := m.GetFormatID()
-	if id != "best" {
-		t.Errorf("empty format list GetFormatID() = %q, want %q", id, "best")
+	// Nothing selected
+	if id := m.GetFormatID(); id != "" {
+		t.Errorf("empty format list GetFormatID() = %q, want empty", id)
 	}
 
 	// Custom tab with input
 	m.ActiveTab = types.FormatTabCustom
 	m.CustomInput.SetValue("140+137")
-	id = m.GetFormatID()
-	if id != "140+137" {
+	if id := m.GetFormatID(); id != "140+137" {
 		t.Errorf("custom tab GetFormatID() = %q, want %q", id, "140+137")
+	}
+}
+
+func TestFormatListTabsAndMerge(t *testing.T) {
+	m := NewFormatListModel()
+	m.SetSize(100, 30)
+	m.SetFormats([]types.FormatItem{
+		{FormatID: "137", Height: 1080, VCodec: "avc1.640028", ACodec: "none"},
+		{FormatID: "18", Height: 360, VCodec: "avc1", ACodec: "mp4a.40.2"},
+		{FormatID: "140", ACodec: "mp4a.40.2", VCodec: "none", ABR: 128},
+	}, types.VideoItem{Title: "T"})
+
+	if id := m.GetFormatID(); id != "137+bestaudio" {
+		t.Errorf("video-only selection = %q, want 137+bestaudio", id)
+	}
+	m.List.Select(1)
+	m.NextTab() // audio tab has one item; cursor must reset to it
+	if id := m.GetFormatID(); id != "140" {
+		t.Errorf("audio tab selection = %q, want 140", id)
+	}
+	if view := m.View(); !strings.Contains(view, "ID") || !strings.Contains(view, "mp4a") {
+		t.Errorf("view should show table header and short codec names:\n%s", view)
+	}
+}
+
+func TestFormatListAudioOnlySource(t *testing.T) {
+	m := NewFormatListModel()
+	m.SetFormats([]types.FormatItem{{FormatID: "mp3", ACodec: "mp3", VCodec: "none"}}, types.VideoItem{})
+	if m.ActiveTab != types.FormatTabAudio {
+		t.Errorf("ActiveTab = %d, want audio when there are no video formats", m.ActiveTab)
 	}
 }
 

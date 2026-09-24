@@ -3,28 +3,7 @@ package utils
 import (
 	"os"
 	"path/filepath"
-
-	"github.com/adrg/xdg"
 )
-
-// ConfigDir returns the XDG config directory for ytui-go
-func ConfigDir() string {
-	return filepath.Join(xdg.ConfigHome, "ytui-go")
-}
-
-// DataDir returns the XDG data directory for ytui-go
-func DataDir() string {
-	return filepath.Join(xdg.DataHome, "ytui-go")
-}
-
-// DefaultDownloadDir returns the default download directory
-func DefaultDownloadDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "."
-	}
-	return filepath.Join(home, "Downloads")
-}
 
 // ExpandPath expands ~ to home directory
 func ExpandPath(path string) string {
@@ -36,11 +15,6 @@ func ExpandPath(path string) string {
 		return filepath.Join(home, path[1:])
 	}
 	return path
-}
-
-// EnsureDir creates a directory if it doesn't exist
-func EnsureDir(path string) error {
-	return os.MkdirAll(ExpandPath(path), 0o755)
 }
 
 // ClosestExistingDir walks up the path to find the closest existing directory.

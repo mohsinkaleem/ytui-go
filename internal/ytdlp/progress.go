@@ -14,11 +14,11 @@ const progressMarker = "YTPROG"
 
 // progressTemplate is passed verbatim to yt-dlp --progress-template.
 // "download:" is the yt-dlp section specifier and is NOT included in the output.
-// Everything after it is the rendered template that yt-dlp writes to stderr.
-const progressTemplate = `download:` + progressMarker + `|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|%(progress.status)s`
+// The title comes last because it may itself contain "|".
+const progressTemplate = `download:` + progressMarker + `|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|%(progress.status)s|%(info.title)s`
 
 // ParseProgressLine parses a yt-dlp progress template line.
-// Expected format: YTPROG|downloaded|total|total_estimate|speed|eta|status
+// Expected format: YTPROG|downloaded|total|total_estimate|speed|eta|status[|title]
 func ParseProgressLine(line string) (*Progress, error) {
 	line = strings.TrimSpace(line)
 	if !strings.HasPrefix(line, progressMarker+"|") {
@@ -26,13 +26,16 @@ func ParseProgressLine(line string) (*Progress, error) {
 	}
 	line = strings.TrimPrefix(line, progressMarker+"|")
 
-	parts := strings.Split(line, "|")
+	parts := strings.SplitN(line, "|", 7)
 	if len(parts) < 6 {
 		return nil, fmt.Errorf("unexpected format: %d parts", len(parts))
 	}
 
 	p := &Progress{
 		Status: strings.TrimSpace(parts[5]),
+	}
+	if len(parts) == 7 && parts[6] != "NA" {
+		p.Title = parts[6]
 	}
 
 	p.DownloadedBytes = parseNA(parts[0])
@@ -116,21 +119,21 @@ func formatETA(s string) string {
 	return fmt.Sprintf("%d:%02d:%02d", total/3600, (total%3600)/60, total%60)
 }
 
-// HumanBytes formats bytes to human readable string
-func HumanBytes(b int64) string {
+// ParseOutputPath extracts the file path from yt-dlp's destination, merge and
+// already-downloaded status lines. It returns "" for any other line.
+func ParseOutputPath(line string) string {
 	const (
-		KB = 1024
-		MB = 1024 * KB
-		GB = 1024 * MB
+		destination = "[download] Destination: "
+		merging     = `[Merger] Merging formats into "`
+		exists      = " has already been downloaded"
 	)
 	switch {
-	case b >= int64(GB):
-		return fmt.Sprintf("%.1f GB", float64(b)/float64(GB))
-	case b >= int64(MB):
-		return fmt.Sprintf("%.1f MB", float64(b)/float64(MB))
-	case b >= int64(KB):
-		return fmt.Sprintf("%.1f KB", float64(b)/float64(KB))
-	default:
-		return fmt.Sprintf("%d B", b)
+	case strings.HasPrefix(line, destination):
+		return strings.TrimPrefix(line, destination)
+	case strings.HasPrefix(line, merging):
+		return strings.TrimSuffix(strings.TrimPrefix(line, merging), `"`)
+	case strings.HasPrefix(line, "[download] ") && strings.HasSuffix(line, exists):
+		return strings.TrimSuffix(strings.TrimPrefix(line, "[download] "), exists)
 	}
+	return ""
 }

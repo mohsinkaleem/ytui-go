@@ -2,8 +2,6 @@ package ytdlp
 
 import (
 	"testing"
-
-	"github.com/mohsinkaleem/ytui-go/internal/types"
 )
 
 func TestFormatIsVideoOnly(t *testing.T) {
@@ -131,84 +129,6 @@ func TestSortFormatsByABR(t *testing.T) {
 	}
 	if sorted[2].FormatID != "a3" {
 		t.Errorf("third should be a3 (64kbps), got %s", sorted[2].FormatID)
-	}
-}
-
-func TestFilterByType(t *testing.T) {
-	formats := []Format{
-		{FormatID: "1", VCodec: "h264", ACodec: "aac"},  // both
-		{FormatID: "2", VCodec: "h264", ACodec: "none"}, // video only
-		{FormatID: "3", VCodec: "none", ACodec: "opus"}, // audio only
-		{FormatID: "4", VCodec: "vp9", ACodec: ""},      // video only (empty audio)
-	}
-
-	t.Run("video tab includes both and video-only", func(t *testing.T) {
-		filtered := FilterByType(formats, types.FormatTabVideo)
-		if len(filtered) != 3 {
-			t.Errorf("expected 3 video formats, got %d", len(filtered))
-		}
-	})
-
-	t.Run("audio tab includes audio-only", func(t *testing.T) {
-		filtered := FilterByType(formats, types.FormatTabAudio)
-		if len(filtered) != 1 {
-			t.Errorf("expected 1 audio format, got %d", len(filtered))
-		}
-		if filtered[0].FormatID != "3" {
-			t.Errorf("expected format 3, got %s", filtered[0].FormatID)
-		}
-	})
-
-	t.Run("custom tab includes all", func(t *testing.T) {
-		filtered := FilterByType(formats, types.FormatTabCustom)
-		if len(filtered) != 4 {
-			t.Errorf("expected 4 formats, got %d", len(filtered))
-		}
-	})
-}
-
-func TestSuggestBestFormats(t *testing.T) {
-	formats := []Format{
-		{FormatID: "137", Height: 1080, Resolution: "1920x1080", VCodec: "h264", ACodec: "none", Filesize: 500},
-		{FormatID: "136", Height: 720, Resolution: "1280x720", VCodec: "h264", ACodec: "none", Filesize: 300},
-		{FormatID: "251", Height: 0, VCodec: "none", ACodec: "opus", ABR: 160, Filesize: 100},
-	}
-
-	combos := SuggestBestFormats(formats)
-
-	if len(combos) == 0 {
-		t.Fatal("expected at least one combo")
-	}
-
-	// First should always be "Best"
-	if combos[0].Label != "Best" {
-		t.Errorf("first combo should be 'Best', got %q", combos[0].Label)
-	}
-	if combos[0].FormatID != "bestvideo+bestaudio/best" {
-		t.Errorf("first combo FormatID should be best combo string")
-	}
-
-	// Should include 1080p and 720p
-	found1080, found720, foundAudio := false, false, false
-	for _, c := range combos {
-		if c.Label == "1920x1080" {
-			found1080 = true
-		}
-		if c.Label == "1280x720" {
-			found720 = true
-		}
-		if c.Label == "Audio only (best)" {
-			foundAudio = true
-		}
-	}
-	if !found1080 {
-		t.Error("should include 1080p combo")
-	}
-	if !found720 {
-		t.Error("should include 720p combo")
-	}
-	if !foundAudio {
-		t.Error("should include audio-only combo")
 	}
 }
 

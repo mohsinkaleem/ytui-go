@@ -1,177 +1,97 @@
 package app
 
 import (
-	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/mohsinkaleem/ytui-go/internal/download"
+	"github.com/mohsinkaleem/ytui-go/internal/styles"
+	"github.com/mohsinkaleem/ytui-go/internal/types"
 )
 
-// Global key bindings
-var (
-	KeyQuit = key.NewBinding(
-		key.WithKeys("ctrl+c"),
-		key.WithHelp("ctrl+c", "exit"),
-	)
-	KeyHelp = key.NewBinding(
-		key.WithKeys("?"),
-		key.WithHelp("?", "help"),
-	)
-	KeyBack = key.NewBinding(
-		key.WithKeys("b"),
-		key.WithHelp("b", "back"),
-	)
-	KeyEnter = key.NewBinding(
-		key.WithKeys("enter"),
-		key.WithHelp("enter", "confirm"),
-	)
-	KeySlash = key.NewBinding(
-		key.WithKeys("/"),
-		key.WithHelp("/", "commands"),
-	)
-	KeyCopy = key.NewBinding(
-		key.WithKeys("ctrl+y"),
-		key.WithHelp("ctrl+y", "copy URL"),
-	)
-	KeySpace = key.NewBinding(
-		key.WithKeys(" "),
-		key.WithHelp("space", "select"),
-	)
-	KeySelectAll = key.NewBinding(
-		key.WithKeys("a"),
-		key.WithHelp("a", "select all"),
-	)
-	KeyDownload = key.NewBinding(
-		key.WithKeys("d"),
-		key.WithHelp("d", "download"),
-	)
-	KeyPlay = key.NewBinding(
-		key.WithKeys("p"),
-		key.WithHelp("p", "play"),
-	)
-	KeyPause = key.NewBinding(
-		key.WithKeys("p"),
-		key.WithHelp("p", "pause"),
-	)
-	KeyResume = key.NewBinding(
-		key.WithKeys("p"),
-		key.WithHelp("p", "resume"),
-	)
-	KeyCancel = key.NewBinding(
-		key.WithKeys("c"),
-		key.WithHelp("c", "cancel"),
-	)
-	KeyTab = key.NewBinding(
-		key.WithKeys("tab"),
-		key.WithHelp("tab", "next tab"),
-	)
-	KeyShiftTab = key.NewBinding(
-		key.WithKeys("shift+tab"),
-		key.WithHelp("shift+tab", "prev tab"),
-	)
-	KeyToggleSubs = key.NewBinding(
-		key.WithKeys("ctrl+s"),
-		key.WithHelp("ctrl+s", "subtitles"),
-	)
-	KeyToggleMeta = key.NewBinding(
-		key.WithKeys("ctrl+m"),
-		key.WithHelp("ctrl+m", "metadata"),
-	)
-	KeyToggleChapters = key.NewBinding(
-		key.WithKeys("ctrl+j"),
-		key.WithHelp("ctrl+j", "chapters"),
-	)
-	KeyRetry = key.NewBinding(
-		key.WithKeys("r"),
-		key.WithHelp("r", "retry"),
-	)
-	KeyRetryAll = key.NewBinding(
-		key.WithKeys("R"),
-		key.WithHelp("R", "retry all"),
-	)
-	KeySkip = key.NewBinding(
-		key.WithKeys("s"),
-		key.WithHelp("s", "skip"),
-	)
-	KeyUp = key.NewBinding(
-		key.WithKeys("up", "k"),
-		key.WithHelp("↑/k", "up"),
-	)
-	KeyDown = key.NewBinding(
-		key.WithKeys("down", "j"),
-		key.WithHelp("↓/j", "down"),
-	)
-	KeyEsc = key.NewBinding(
-		key.WithKeys("esc"),
-		key.WithHelp("esc", "home"),
-	)
-)
+// keyHints returns alternating key/description pairs for the status bar,
+// most important first. An empty key renders the description alone.
+func (m Model) keyHints() []string {
+	switch m.State {
+	case types.StateSearchInput:
+		switch {
+		case m.Search.ShowThemes:
+			return []string{"↑/↓", "select", "enter", "apply", "esc", "cancel"}
+		case m.Search.ShowSlash:
+			return []string{"↑/↓", "select", "tab", "complete", "enter", "run", "esc", "close"}
+		}
+		hints := []string{"enter", "search", "/", "commands", "tab", "sort"}
+		if len(m.Search.History) > 0 {
+			hints = append(hints, "↑", "history")
+		}
+		return append(hints, "ctrl+c", "quit")
 
-// GetStatusKeysText returns formatted key hints for the status bar
-func GetStatusKeysText(state string) string {
-	switch state {
-	case "SearchInput":
-		return FormatKeys(
-			KeyEnter, "search",
-			KeySlash, "commands",
-			KeyTab, "sort",
-		)
-	case "VideoList":
-		return FormatKeys(
-			KeyEnter, "formats",
-			KeyDownload, "download",
-			KeyPlay, "play",
-			KeySpace, "select",
-			KeySelectAll, "select all",
-			KeyEsc, "home",
-		)
-	case "FormatList":
-		return FormatKeys(
-			KeyEnter, "download",
-			KeyPlay, "play",
-			KeyTab, "next tab",
-			KeyBack, "back",
-			KeyEsc, "home",
-		)
-	case "Download":
-		// Default – caller should prefer Model.currentKeysText() for live context
-		return FormatKeys(
-			KeyPause, "pause",
-			KeyCancel, "cancel",
-			KeyBack, "back",
-			KeyEsc, "home",
-		)
-	case "Loading":
-		return "esc/c: cancel"
-	case "VideoPlaying":
-		return "mpv running — close mpv to return"
-	case "ResumeList":
-		return FormatKeys(
-			KeyEnter, "resume",
-			KeyDownload, "resume all",
-			KeyEsc, "home",
-		)
-	default:
-		return ""
+	case types.StateLoading:
+		return []string{"esc", "cancel"}
+
+	case types.StateVideoList:
+		if m.VideoList.IsFiltering() {
+			return []string{"enter", "apply filter", "esc", "cancel"}
+		}
+		return []string{"enter", "formats", "d", "download", "p", "play", "space", "select", "a", "all", "/", "filter", "b", "back", "ctrl+y", "copy URL"}
+
+	case types.StateFormatList:
+		if m.FormatList.ActiveTab == types.FormatTabCustom {
+			return []string{"↑/↓", "preset", "enter", "download", "tab", "switch tab", "esc", "home"}
+		}
+		return []string{"enter", "download", "p", "play", "tab", "switch tab", "b", "back", "esc", "home"}
+
+	case types.StateDownload:
+		return m.downloadHints()
+
+	case types.StateVideoPlaying:
+		return []string{"", "mpv is running — quit it to return"}
+
+	case types.StateResumeList:
+		return []string{"enter", "resume", "d", "resume all", "x", "delete", "b", "back"}
 	}
+	return nil
 }
 
-// FormatKeys formats key bindings as "key: desc | key: desc"
-func FormatKeys(bindings ...interface{}) string {
-	result := ""
-	for i := 0; i < len(bindings)-1; i += 2 {
-		binding, ok := bindings[i].(key.Binding)
-		if !ok {
-			continue
-		}
-		desc, ok := bindings[i+1].(string)
-		if !ok {
-			continue
-		}
-		if result != "" {
-			result += " | "
-		}
-		keys := binding.Keys()
-		if len(keys) > 0 {
-			result += keys[0] + ": " + desc
+// downloadHints adapts to the state of the task under the cursor.
+func (m Model) downloadHints() []string {
+	var hints []string
+	if len(m.Download.Tasks) > 1 {
+		hints = append(hints, "↑/↓", "select")
+	}
+	if t := m.Download.CurrentTask(); t != nil {
+		switch t.GetState() {
+		case download.StateDownloading:
+			hints = append(hints, "p", "pause", "c", "cancel")
+		case download.StatePaused:
+			hints = append(hints, "p", "resume", "c", "cancel")
+		case download.StateQueued:
+			hints = append(hints, "c", "cancel")
+		case download.StateFailed:
+			hints = append(hints, "r", "retry")
+			if m.Download.FailedCount() > 1 {
+				hints = append(hints, "R", "retry all")
+			}
+			hints = append(hints, "s", "skip")
 		}
 	}
-	return result
+	return append(hints, "b", "back", "esc", "home")
+}
+
+// renderHints renders key/description pairs, dropping trailing pairs that don't fit in width.
+func renderHints(width int, pairs ...string) string {
+	sep := styles.StatusSepStyle.Render(" • ")
+	var out string
+	for i := 0; i+1 < len(pairs); i += 2 {
+		part := styles.StatusDescStyle.Render(pairs[i+1])
+		if pairs[i] != "" {
+			part = styles.StatusKeyStyle.Render(pairs[i]) + styles.StatusDescStyle.Render(" "+pairs[i+1])
+		}
+		if out != "" {
+			part = sep + part
+		}
+		if lipgloss.Width(out)+lipgloss.Width(part) > width {
+			break
+		}
+		out += part
+	}
+	return out
 }

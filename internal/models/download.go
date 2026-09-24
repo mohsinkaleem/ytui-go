@@ -9,78 +9,65 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mohsinkaleem/ytui-go/internal/download"
 	"github.com/mohsinkaleem/ytui-go/internal/styles"
-	"github.com/mohsinkaleem/ytui-go/internal/types"
+	"github.com/mohsinkaleem/ytui-go/internal/ytdlp"
 )
-
-// paddedIcon returns a state icon padded to exactly 2 display columns.
-func paddedIcon(icon string) string {
-	w := lipgloss.Width(icon)
-	if w < 2 {
-		return icon + strings.Repeat(" ", 2-w)
-	}
-	return icon
-}
 
 // DownloadModel represents the download progress screen
 type DownloadModel struct {
-	Video      types.VideoItem
-	Progress   progress.Model
-	Tasks      []*download.Task
-	CurrentIdx int
-	CursorIdx  int // user-navigable cursor for queue selection
-	Width      int
-	Height     int
+	Progress  progress.Model
+	Tasks     []*download.Task
+	CursorIdx int // user-navigable cursor for queue selection
+	Width     int
+	Height    int
 }
 
 // NewDownloadModel creates a new download model
 func NewDownloadModel() DownloadModel {
-	p := progress.New(
-		progress.WithDefaultGradient(),
+	m := DownloadModel{}
+	m.ApplyTheme()
+	return m
+}
+
+// ApplyTheme rebuilds the progress bar with the current theme's colors.
+func (m *DownloadModel) ApplyTheme() {
+	t := styles.CurrentTheme
+	m.Progress = progress.New(
+		progress.WithGradient(string(t.Accent), string(t.Pink)),
 		progress.WithoutPercentage(),
 	)
-	p.FullColor = string(styles.ProgressFillColor)
-
-	return DownloadModel{
-		Progress: p,
-	}
+	m.Progress.EmptyColor = string(t.Overlay)
+	m.SetSize(m.Width, m.Height)
 }
 
 // SetSize updates dimensions
 func (m *DownloadModel) SetSize(w, h int) {
 	m.Width = w
 	m.Height = h
-	m.Progress.Width = w - 8
+	m.Progress.Width = max(min(w, 60), 10)
 }
 
 // SetTasks sets the download tasks, preserving cursor position when possible
 func (m *DownloadModel) SetTasks(tasks []*download.Task) {
-	prevCursor := m.CursorIdx
 	m.Tasks = tasks
-	m.CurrentIdx = 0
-	if prevCursor >= 0 && prevCursor < len(tasks) {
-		m.CursorIdx = prevCursor
-	} else {
-		m.CursorIdx = 0
+	m.CursorIdx = max(min(m.CursorIdx, len(tasks)-1), 0)
+}
+
+// Focus moves the cursor to the task with the given ID, if present.
+func (m *DownloadModel) Focus(id string) {
+	for i, t := range m.Tasks {
+		if t.ID == id {
+			m.CursorIdx = i
+			return
+		}
 	}
 }
 
-// CurrentTask returns the task at the user's cursor position, or first active.
+// CurrentTask returns the task at the user's cursor position.
 func (m *DownloadModel) CurrentTask() *download.Task {
-	if len(m.Tasks) == 0 {
+	if m.CursorIdx < 0 || m.CursorIdx >= len(m.Tasks) {
 		return nil
 	}
-	// If cursor points to a valid task, use it
-	if m.CursorIdx >= 0 && m.CursorIdx < len(m.Tasks) {
-		return m.Tasks[m.CursorIdx]
-	}
-	// Fallback: first active task
-	for i, t := range m.Tasks {
-		if t.GetState() == download.StateDownloading {
-			m.CursorIdx = i
-			return t
-		}
-	}
-	return m.Tasks[0]
+	return m.Tasks[m.CursorIdx]
 }
 
 // MoveUp moves the queue cursor up.
@@ -100,23 +87,22 @@ func (m *DownloadModel) MoveDown() {
 // AllDone checks if all tasks are completed/cancelled/failed
 func (m *DownloadModel) AllDone() bool {
 	for _, t := range m.Tasks {
-		state := t.GetState()
-		if state != download.StateCompleted && state != download.StateCancelled && state != download.StateFailed {
+		if !t.GetState().IsTerminal() {
 			return false
 		}
 	}
 	return true
 }
 
-// HasFailedTasks returns true if more than one task has failed state
-func (m *DownloadModel) HasFailedTasks() bool {
+// FailedCount returns the number of failed tasks
+func (m *DownloadModel) FailedCount() int {
 	count := 0
 	for _, t := range m.Tasks {
 		if t.GetState() == download.StateFailed {
 			count++
 		}
 	}
-	return count > 1
+	return count
 }
 
 // CompletionSummary returns counts of completed/failed/cancelled
@@ -136,304 +122,197 @@ func (m *DownloadModel) CompletionSummary() (completed, failed, cancelled int) {
 
 // View renders the download screen
 func (m *DownloadModel) View() string {
-	var b strings.Builder
-
 	task := m.CurrentTask()
 	if task == nil {
-		return styles.MutedStyle.Render("No active downloads")
+		return styles.MutedStyle.Render("No downloads yet.")
 	}
 
-	// ── Header: queue overview ──────────────────────────────────────────────
+	var b strings.Builder
+	b.WriteString(m.headerView())
+	b.WriteString("\n\n")
+	b.WriteString(m.taskView(task))
+	if m.AllDone() {
+		b.WriteString(m.summaryView())
+	}
 	if len(m.Tasks) > 1 {
-		completed, failed, cancelled := m.CompletionSummary()
-		done := completed + failed + cancelled
-		active := 0
-		queued := 0
-		for _, t := range m.Tasks {
-			switch t.GetState() {
-			case download.StateDownloading:
-				active++
-			case download.StateQueued:
-				queued++
-			}
-		}
-		header := fmt.Sprintf("Queue  %d/%d done", done, len(m.Tasks))
-		if active > 0 {
-			header += fmt.Sprintf("  •  %d active", active)
-		}
-		if queued > 0 {
-			header += fmt.Sprintf("  •  %d waiting", queued)
-		}
-		b.WriteString(styles.SectionHeaderStyle.Render(header))
-		b.WriteString("\n\n")
+		b.WriteString(m.queueView(m.Height - strings.Count(b.String(), "\n")))
 	}
+	return b.String()
+}
 
-	// ── Current task ────────────────────────────────────────────────────────
-	b.WriteString(styles.VideoTitleStyle.Render(task.Title))
-	b.WriteString("\n")
-
-	if task.FormatID != "" {
-		b.WriteString(styles.MutedStyle.Render("format: " + task.FormatID))
-		b.WriteString("\n")
+func (m *DownloadModel) headerView() string {
+	completed, failed, cancelled := m.CompletionSummary()
+	active, queued := 0, 0
+	for _, t := range m.Tasks {
+		switch t.GetState() {
+		case download.StateDownloading:
+			active++
+		case download.StateQueued:
+			queued++
+		}
 	}
+	meta := fmt.Sprintf("  %d/%d done", completed+failed+cancelled, len(m.Tasks))
+	if active > 0 {
+		meta += fmt.Sprintf(" · %d active", active)
+	}
+	if queued > 0 {
+		meta += fmt.Sprintf(" · %d waiting", queued)
+	}
+	return styles.SectionHeaderStyle.Render("Downloads") + styles.MutedStyle.Render(meta)
+}
 
-	progress := task.GetProgress()
-	state := task.GetState()
+// taskView renders the details of the task under the cursor.
+func (m *DownloadModel) taskView(t *download.Task) string {
+	var b strings.Builder
+	state := t.GetState()
 
+	b.WriteString(styles.VideoTitleStyle.Render(styles.Truncate(t.GetTitle(), m.Width)))
 	b.WriteString("\n")
+	b.WriteString(styles.MutedStyle.Render(styles.Truncate("format "+t.FormatID, m.Width)))
+	b.WriteString("\n\n")
 
 	switch state {
 	case download.StateQueued:
-		// Show queue position
-		pos := 1
-		for i, t := range m.Tasks {
-			if t.ID == task.ID {
-				pos = i + 1
-				break
-			}
-		}
-		b.WriteString(styles.WarningStyle.Render(fmt.Sprintf("○ Waiting in queue  (position %d of %d)…", pos, len(m.Tasks))))
+		b.WriteString(styles.WarningStyle.Render("○ Waiting in queue…"))
 		b.WriteString("\n")
 
-	case download.StateDownloading:
-		b.WriteString(styles.AccentStyle.Render("⇣ Downloading"))
-		b.WriteString("\n")
-
-		pct := progress.Percent
-		b.WriteString(m.Progress.ViewAs(pct))
-		b.WriteString("\n")
-
-		// Size + percentage line
-		sizeLine := fmt.Sprintf("  %.0f%%", pct*100)
-		if progress.DownloadedBytes > 0 {
-			if progress.TotalBytes > 0 {
-				sizeLine = fmt.Sprintf("  %s / %s  (%.0f%%)",
-					formatBytes(progress.DownloadedBytes),
-					formatBytes(progress.TotalBytes),
-					pct*100,
-				)
-			} else {
-				sizeLine = fmt.Sprintf("  %s downloaded  (%.0f%%)",
-					formatBytes(progress.DownloadedBytes),
-					pct*100,
-				)
-			}
+	case download.StateDownloading, download.StatePaused:
+		p := t.GetProgress()
+		label := styles.AccentStyle.Render(state.Label())
+		if state == download.StatePaused {
+			label = styles.WarningStyle.Render(state.Label())
 		}
-		b.WriteString(styles.SpeedStyle.Render(sizeLine))
+		b.WriteString(label + "  " + styles.BoldStyle.Render(fmt.Sprintf("%.0f%%", p.Percent*100)))
 		b.WriteString("\n")
-
-		speedParts := []string{}
-		if progress.Speed != "" {
-			speedParts = append(speedParts, progress.Speed)
-		}
-		if progress.ETA != "" {
-			speedParts = append(speedParts, "ETA "+progress.ETA)
-		}
-		if len(speedParts) > 0 {
-			b.WriteString(styles.SpeedStyle.Render("  " + strings.Join(speedParts, "  •  ")))
-			b.WriteString("\n")
-		}
-
-		if task.OutputPath != "" {
-			b.WriteString(styles.PathStyle.Render("  → " + task.OutputPath))
-			b.WriteString("\n")
-		}
-
-	case download.StatePaused:
-		b.WriteString(styles.WarningStyle.Render("⏸ Paused"))
+		b.WriteString(m.Progress.ViewAs(p.Percent))
 		b.WriteString("\n")
-
-		b.WriteString(m.Progress.ViewAs(progress.Percent))
-		b.WriteString("\n")
-
-		// Size + percentage line
-		sizeLine := fmt.Sprintf("  %.0f%% downloaded", progress.Percent*100)
-		if progress.DownloadedBytes > 0 {
-			if progress.TotalBytes > 0 {
-				sizeLine = fmt.Sprintf("  %s / %s  (%.0f%%)",
-					formatBytes(progress.DownloadedBytes),
-					formatBytes(progress.TotalBytes),
-					progress.Percent*100,
-				)
-			} else {
-				sizeLine = fmt.Sprintf("  %s downloaded  (%.0f%%)",
-					formatBytes(progress.DownloadedBytes),
-					progress.Percent*100,
-				)
-			}
-		}
-		b.WriteString(styles.SpeedStyle.Render(sizeLine))
-		b.WriteString("\n")
-
-		if task.OutputPath != "" {
-			b.WriteString(styles.PathStyle.Render("  → " + task.OutputPath))
+		if stats := progressStats(p, state == download.StateDownloading); stats != "" {
+			b.WriteString(styles.SpeedStyle.Render(stats))
 			b.WriteString("\n")
 		}
 
 	case download.StateCompleted:
-		b.WriteString(styles.SuccessStyle.Render("✓ Complete"))
+		b.WriteString(styles.SuccessStyle.Render(state.Label()))
 		b.WriteString("\n")
-		if task.OutputPath != "" {
-			b.WriteString(styles.PathStyle.Render("→ " + task.OutputPath))
-			b.WriteString("\n")
-		}
 
 	case download.StateFailed:
-		b.WriteString(styles.ErrorStyle.Render("✕ Failed"))
+		b.WriteString(styles.ErrorStyle.Render(state.Label()))
 		b.WriteString("\n")
-		if task.GetError() != nil {
-			b.WriteString(styles.ErrorStyle.Render("  " + task.GetError().Error()))
+		if err := t.GetError(); err != nil {
+			b.WriteString(styles.ErrorStyle.Width(m.Width).Render(err.Error()))
 			b.WriteString("\n")
 		}
 
 	case download.StateCancelled:
-		b.WriteString(styles.MutedStyle.Render("✕ Cancelled"))
+		b.WriteString(styles.MutedStyle.Render(state.Label()))
 		b.WriteString("\n")
 	}
 
-	// ── Completion summary (all done) ───────────────────────────────────────
-	if m.AllDone() {
-		completed, failed, cancelled := m.CompletionSummary()
-		if len(m.Tasks) > 1 {
-			b.WriteString("\n")
-			summary := []string{}
-			if completed > 0 {
-				summary = append(summary, styles.SuccessStyle.Render(fmt.Sprintf("✓ %d completed", completed)))
-			}
-			if failed > 0 {
-				summary = append(summary, styles.ErrorStyle.Render(fmt.Sprintf("✗ %d failed", failed)))
-			}
-			if cancelled > 0 {
-				summary = append(summary, styles.WarningStyle.Render(fmt.Sprintf("→ %d skipped", cancelled)))
-			}
-			b.WriteString(strings.Join(summary, "  "))
-			b.WriteString("\n")
-		}
-		// Show the output folder (from any completed task)
-		for _, t := range m.Tasks {
-			if t.GetState() == download.StateCompleted && t.OutputPath != "" {
-				dir := filepath.Dir(t.OutputPath)
-				if dir != "." && dir != "" {
-					b.WriteString(styles.MutedStyle.Render("  Saved to: " + dir))
-					b.WriteString("\n")
-				}
-				break
-			}
-		}
-
-	}
-
-	// ── Queue list ──────────────────────────────────────────────────────────
-	if len(m.Tasks) > 1 {
+	if path := t.GetOutputPath(); path != "" {
+		b.WriteString(styles.PathStyle.Render("→ " + styles.TruncateLeft(path, m.Width-2)))
 		b.WriteString("\n")
-		b.WriteString(styles.BoldStyle.Render("Queue:"))
-		b.WriteString("  ")
-		b.WriteString(styles.MutedStyle.Render("↑/↓ navigate  p pause/resume  c cancel  b back  esc home"))
-		b.WriteString("\n")
-
-		maxShow := 10
-		if len(m.Tasks) < maxShow {
-			maxShow = len(m.Tasks)
-		}
-
-		// Scrolling: keep cursor in view
-		start := 0
-		if m.CursorIdx >= maxShow {
-			start = m.CursorIdx - maxShow + 1
-		}
-		end := start + maxShow
-		if end > len(m.Tasks) {
-			end = len(m.Tasks)
-		}
-
-		for i := start; i < end; i++ {
-			t := m.Tasks[i]
-			s := t.GetState()
-			isCursor := i == m.CursorIdx
-			var st lipgloss.Style
-
-			switch s {
-			case download.StateCompleted:
-				st = styles.QueueItemCompleteStyle
-			case download.StateDownloading:
-				st = styles.QueueItemActiveStyle
-			case download.StateFailed:
-				st = styles.QueueItemErrorStyle
-			case download.StatePaused:
-				st = styles.QueueItemPausedStyle
-			default:
-				st = styles.QueueItemPendingStyle
-			}
-
-			title := t.Title
-			maxLen := m.Width - 26
-			if maxLen < 10 {
-				maxLen = 10
-			}
-			if len([]rune(title)) > maxLen {
-				title = string([]rune(title)[:maxLen-3]) + "..."
-			}
-
-			stateLabel := fmt.Sprintf("[%s]", string(s))
-			iconCol := paddedIcon(s.Icon())
-
-			// Build line: cursor(2) + icon(2) + space + state(padded 14) + title
-			cursor := "  "
-			if isCursor {
-				cursor = styles.AccentStyle.Render("▸ ")
-			}
-			line := fmt.Sprintf("%s%s %-14s %s", cursor, iconCol, stateLabel, title)
-
-			if isCursor {
-				b.WriteString(styles.ListSelectedItemStyle.Render(st.Render(line)))
-			} else {
-				// 3 spaces matches ListSelectedItemStyle indent (border 1 + padding 2)
-				b.WriteString("   " + st.Render(line))
-			}
-
-			// Show format info on a second line for the cursor item
-			if isCursor && t.FormatID != "" {
-				fmtLine := fmt.Sprintf("    fmt:%s", t.FormatID)
-				if t.GetOutputPath() != "" {
-					path := t.GetOutputPath()
-					maxPath := m.Width - 12
-					if maxPath > 60 {
-						maxPath = 60
-					}
-					if len(path) > maxPath {
-						path = "…" + path[len(path)-maxPath+1:]
-					}
-					fmtLine += "  •  → " + path
-				}
-				b.WriteString("\n" + styles.ListSelectedItemStyle.Render(styles.MutedStyle.Render(fmtLine)))
-			}
-			b.WriteString("\n")
-		}
-
-		if len(m.Tasks) > end {
-			b.WriteString(styles.MutedStyle.Render(fmt.Sprintf("  … and %d more", len(m.Tasks)-end)))
-			b.WriteString("\n")
-		}
 	}
-
 	return b.String()
 }
 
-// formatBytes converts a byte count to a human-readable string.
-func formatBytes(n int64) string {
-	const (
-		KB = 1024
-		MB = 1024 * KB
-		GB = 1024 * MB
-	)
+// progressStats formats size, speed and ETA; speed/ETA only while live.
+func progressStats(p ytdlp.Progress, live bool) string {
+	var parts []string
 	switch {
-	case n >= GB:
-		return fmt.Sprintf("%.1f GB", float64(n)/float64(GB))
-	case n >= MB:
-		return fmt.Sprintf("%.1f MB", float64(n)/float64(MB))
-	case n >= KB:
-		return fmt.Sprintf("%.1f KB", float64(n)/float64(KB))
+	case p.TotalBytes > 0:
+		parts = append(parts, formatBytes(p.DownloadedBytes)+" / "+formatBytes(p.TotalBytes))
+	case p.DownloadedBytes > 0:
+		parts = append(parts, formatBytes(p.DownloadedBytes))
+	}
+	if live && p.Speed != "" {
+		parts = append(parts, p.Speed)
+	}
+	if live && p.ETA != "" {
+		parts = append(parts, "ETA "+p.ETA)
+	}
+	return strings.Join(parts, "  •  ")
+}
+
+func (m *DownloadModel) summaryView() string {
+	var b strings.Builder
+	if len(m.Tasks) > 1 {
+		completed, failed, cancelled := m.CompletionSummary()
+		var parts []string
+		if completed > 0 {
+			parts = append(parts, styles.SuccessStyle.Render(fmt.Sprintf("✓ %d completed", completed)))
+		}
+		if failed > 0 {
+			parts = append(parts, styles.ErrorStyle.Render(fmt.Sprintf("✗ %d failed", failed)))
+		}
+		if cancelled > 0 {
+			parts = append(parts, styles.WarningStyle.Render(fmt.Sprintf("→ %d skipped", cancelled)))
+		}
+		b.WriteString("\n")
+		b.WriteString(strings.Join(parts, "  "))
+		b.WriteString("\n")
+	}
+	for _, t := range m.Tasks {
+		if path := t.GetOutputPath(); path != "" && t.GetState() == download.StateCompleted {
+			b.WriteString(styles.MutedStyle.Render("Saved to " + styles.TruncateLeft(filepath.Dir(path), m.Width-9)))
+			b.WriteString("\n")
+			break
+		}
+	}
+	return b.String()
+}
+
+// queueView renders as many queue rows as fit in avail lines, keeping the cursor visible.
+func (m *DownloadModel) queueView(avail int) string {
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(styles.BoldStyle.Render("Queue"))
+	b.WriteString("\n")
+
+	total := len(m.Tasks)
+	rows := min(max(avail-3, 1), total) // blank + title + position line
+	start := max(min(m.CursorIdx-rows/2, total-rows), 0)
+	end := start + rows
+
+	const labelW = 11
+	titleW := m.Width - 3 - 3 - labelW - 1 // indent, icon + space, label, space
+	for i := start; i < end; i++ {
+		t := m.Tasks[i]
+		s := t.GetState()
+		label := string(s)
+		switch s {
+		case download.StateDownloading:
+			label = fmt.Sprintf("%.0f%%", t.GetProgress().Percent*100)
+		case download.StatePaused:
+			label = fmt.Sprintf("paused %.0f%%", t.GetProgress().Percent*100)
+		}
+		line := paddedIcon(s.Icon()) + " " + padRight(label, labelW) + " " + styles.Truncate(t.GetTitle(), titleW)
+
+		if i == m.CursorIdx {
+			b.WriteString(styles.ListSelectedItemStyle.Render(queueStyle(s).Bold(true).Render(line)))
+		} else {
+			b.WriteString(styles.ListItemStyle.Render(queueStyle(s).Render(line)))
+		}
+		b.WriteString("\n")
+	}
+
+	if rows < total {
+		b.WriteString(styles.MutedStyle.Render(fmt.Sprintf("   %d–%d of %d", start+1, end, total)))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func queueStyle(s download.TaskState) lipgloss.Style {
+	switch s {
+	case download.StateCompleted:
+		return styles.QueueItemCompleteStyle
+	case download.StateDownloading:
+		return styles.QueueItemActiveStyle
+	case download.StateFailed:
+		return styles.QueueItemErrorStyle
+	case download.StatePaused:
+		return styles.QueueItemPausedStyle
 	default:
-		return fmt.Sprintf("%d B", n)
+		return styles.QueueItemPendingStyle
 	}
 }

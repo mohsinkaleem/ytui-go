@@ -2,23 +2,6 @@ package models
 
 import "testing"
 
-func TestFormatResumeCount(t *testing.T) {
-	tests := []struct {
-		count int
-		want  string
-	}{
-		{0, "0 unfinished downloads"},
-		{1, "1 unfinished download"},
-		{5, "5 unfinished downloads"},
-	}
-	for _, tt := range tests {
-		got := FormatResumeCount(tt.count)
-		if got != tt.want {
-			t.Errorf("FormatResumeCount(%d) = %q, want %q", tt.count, got, tt.want)
-		}
-	}
-}
-
 func TestFormatViewCount(t *testing.T) {
 	tests := []struct {
 		count int64

@@ -36,17 +36,17 @@ func (m *PlayerModel) SetSize(w, h int) {
 func (m *PlayerModel) View() string {
 	var b strings.Builder
 
-	b.WriteString("\n\n")
-	b.WriteString(styles.AccentStyle.Render("♫ Now Playing"))
-	b.WriteString("\n\n")
-	b.WriteString(styles.VideoTitleStyle.Render(m.Video.Title))
 	b.WriteString("\n")
-	if m.Video.Channel != "" {
-		b.WriteString(styles.VideoDetailStyle.Render("📺 " + m.Video.Channel))
+	b.WriteString(styles.AccentStyle.Render("▶ Playing in mpv"))
+	b.WriteString("\n\n")
+	b.WriteString(styles.VideoTitleStyle.Render(styles.Truncate(m.Video.Title, m.Width)))
+	b.WriteString("\n")
+	if details := videoDetails(m.Video); details != "" {
+		b.WriteString(styles.VideoDetailStyle.Render(styles.Truncate(details, m.Width)))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(styles.MutedStyle.Render("mpv is running... press q in mpv to return"))
+	b.WriteString(styles.MutedStyle.Render("Quit mpv (q) to return."))
 
 	return b.String()
 }

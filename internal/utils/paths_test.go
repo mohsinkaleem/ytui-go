@@ -31,42 +31,26 @@ func TestExpandPath(t *testing.T) {
 	}
 }
 
-func TestEnsureDir(t *testing.T) {
+func TestClosestExistingDir(t *testing.T) {
 	dir := t.TempDir()
-	newDir := filepath.Join(dir, "a", "b", "c")
-	err := EnsureDir(newDir)
-	if err != nil {
-		t.Fatalf("EnsureDir failed: %v", err)
-	}
-	info, err := os.Stat(newDir)
-	if err != nil {
-		t.Fatalf("directory should exist: %v", err)
-	}
-	if !info.IsDir() {
-		t.Error("should be a directory")
+	if got := ClosestExistingDir(filepath.Join(dir, "missing", "deeper")); got != dir {
+		t.Errorf("ClosestExistingDir() = %q, want %q", got, dir)
 	}
 }
 
-func TestDefaultDownloadDir(t *testing.T) {
-	dir := DefaultDownloadDir()
-	if dir == "" || dir == "." {
-		t.Skip("could not determine home directory")
+func TestFormatDuration(t *testing.T) {
+	tests := []struct {
+		secs float64
+		want string
+	}{
+		{0, "0:00"},
+		{59, "0:59"},
+		{754, "12:34"},
+		{3723, "1:02:03"},
 	}
-	if !filepath.IsAbs(dir) {
-		t.Errorf("DefaultDownloadDir() = %q, should be absolute", dir)
-	}
-}
-
-func TestConfigDir(t *testing.T) {
-	dir := ConfigDir()
-	if dir == "" {
-		t.Error("ConfigDir should not be empty")
-	}
-}
-
-func TestDataDir(t *testing.T) {
-	dir := DataDir()
-	if dir == "" {
-		t.Error("DataDir should not be empty")
+	for _, tt := range tests {
+		if got := formatDuration(tt.secs); got != tt.want {
+			t.Errorf("formatDuration(%v) = %q, want %q", tt.secs, got, tt.want)
+		}
 	}
 }

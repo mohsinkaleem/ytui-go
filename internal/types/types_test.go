@@ -2,8 +2,6 @@ package types
 
 import (
 	"testing"
-
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestStateConstants(t *testing.T) {
@@ -191,15 +189,6 @@ func TestFormatItemHumanSizeGigabytes(t *testing.T) {
 	}
 }
 
-func TestCmdFunc(t *testing.T) {
-	cmd := CmdFunc(func() tea.Msg {
-		return ShowToastMsg{Message: "test"}
-	})
-	if cmd == nil {
-		t.Error("CmdFunc should return non-nil")
-	}
-}
-
 func TestFormatFloat(t *testing.T) {
 	tests := []struct {
 		input float64
@@ -222,15 +211,5 @@ func TestFormatFloat(t *testing.T) {
 func TestSortOptionsLength(t *testing.T) {
 	if len(SortOptions) != 4 {
 		t.Errorf("SortOptions length = %d, want 4", len(SortOptions))
-	}
-}
-
-func TestDownloadOptsDefaults(t *testing.T) {
-	opts := DownloadOpts{}
-	if opts.EmbedSubs || opts.EmbedMetadata || opts.EmbedChapters {
-		t.Error("DownloadOpts zero value should have all embeds false")
-	}
-	if opts.OutputDir != "" {
-		t.Error("DownloadOpts zero value should have empty OutputDir")
 	}
 }

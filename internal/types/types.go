@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/charmbracelet/bubbles/list"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 // State constants — string-typed for readability
@@ -18,14 +17,6 @@ const (
 	StateDownload     State = "Download"
 	StateVideoPlaying State = "VideoPlaying"
 	StateResumeList   State = "ResumeList"
-)
-
-// Loading context types
-const (
-	LoadingSearch   = "search"
-	LoadingFormats  = "formats"
-	LoadingPlaylist = "playlist"
-	LoadingPlay     = "play"
 )
 
 // Sort options
@@ -55,25 +46,14 @@ func (s SortBy) String() string {
 	}
 }
 
-// DownloadOpts configures download behavior
-type DownloadOpts struct {
-	EmbedSubs      bool
-	EmbedMetadata  bool
-	EmbedChapters  bool
-	OutputDir      string
-	OutputTemplate string
-}
-
 // --- Video List Item (implements list.Item) ---
 
 type VideoItem struct {
 	ID             string
 	Title          string
 	Channel        string
-	Duration       string
 	DurationString string
 	ViewCount      int64
-	UploadDate     string
 	URL            string
 	IsLive         bool
 	Selected       bool // for multi-select
@@ -102,28 +82,6 @@ const (
 	FormatTabCustom FormatTab = 2
 )
 
-// --- Navigation Messages ---
-
-type StartSearchMsg struct {
-	Query  string
-	SortBy SortBy
-}
-
-type StartFormatMsg struct {
-	URL string
-}
-
-type StartPlaylistURLMsg struct {
-	URL string
-}
-
-type StartPlayMsg struct {
-	URL      string
-	FormatID string
-}
-
-type BackMsg struct{}
-
 // --- Result Messages ---
 
 type SearchResultMsg struct {
@@ -144,80 +102,13 @@ type PlaylistResultMsg struct {
 	Err    error
 }
 
-type PlayURLResultMsg struct {
-	URL      string
-	FormatID string
-	Err      error
-}
-
-// --- Download Messages ---
-
-type StartDownloadMsg struct {
-	Video    VideoItem
-	FormatID string
-	Opts     DownloadOpts
-}
-
-type PauseDownloadMsg struct {
-	TaskID string
-}
-
-type ResumeDownloadMsg struct {
-	TaskID string
-}
-
-type CancelDownloadMsg struct {
-	TaskID string
-}
-
-type DownloadCompleteMsg struct {
-	TaskID string
-	Err    error
-}
-
-type ProgressMsg struct {
-	TaskID          string
-	Percent         float64
-	DownloadedBytes int64
-	TotalBytes      int64
-	Speed           string
-	ETA             string
-	Status          string
-}
-
-// --- Queue Messages ---
-
-type StartQueueMsg struct {
-	Videos   []VideoItem
-	FormatID string
-	Opts     DownloadOpts
-}
-
-type SkipQueueItemMsg struct {
-	TaskID string
-}
-
-type RetryQueueItemMsg struct {
-	TaskID string
-}
-
-// --- Cancellation Messages ---
-
-type CancelSearchMsg struct{}
-type CancelFormatsMsg struct{}
-
-// DownloadTickMsg triggers periodic refresh of download indicators
+// DownloadTickMsg triggers a periodic refresh while downloads are running
 type DownloadTickMsg struct{}
 
-// --- UX Messages ---
-
-type ShowToastMsg struct {
-	Message string
+// ClearToastMsg hides the toast with the matching sequence number
+type ClearToastMsg struct {
+	Seq int
 }
-
-type ClearToastMsg struct{}
-
-type MPVStartedMsg struct{}
 
 type MPVExitedMsg struct {
 	Err error
@@ -300,11 +191,6 @@ type FormatCombo struct {
 	Label    string
 	FormatID string
 	Size     int64 // estimated total size in bytes (0 = unknown)
-}
-
-// CmdFunc is a helper to create tea.Cmd from a function
-func CmdFunc(fn func() tea.Msg) tea.Cmd {
-	return fn
 }
 
 // Ensure VideoItem and FormatItem satisfy list.Item at compile time

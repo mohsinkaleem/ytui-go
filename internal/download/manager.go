@@ -1,87 +1,79 @@
 package download
 
 import (
+	"context"
 	"sync"
+	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mohsinkaleem/ytui-go/internal/store"
 	"github.com/mohsinkaleem/ytui-go/internal/types"
 	"github.com/mohsinkaleem/ytui-go/internal/ytdlp"
 )
 
-// Manager manages a pool of download workers
+// Manager runs queued tasks on a fixed pool of workers.
 type Manager struct {
-	mu            sync.Mutex
-	shutdownOnce  sync.Once
-	tasks         []*Task
-	taskMap       map[string]*Task
-	maxConcurrent int
-	activeCount   int
-	program       *tea.Program
-	client        *ytdlp.Client
-	store         *store.Store
-	queue         chan *Task
-	done          chan struct{}
+	mu      sync.Mutex
+	cond    *sync.Cond
+	tasks   []*Task
+	taskMap map[string]*Task
+	pending []*Task // FIFO of tasks waiting for a worker
+	closed  bool
+
+	ctx     context.Context
+	stop    context.CancelFunc
+	workers sync.WaitGroup
+
+	client *ytdlp.Client
+	store  *store.Store
 }
 
-// NewManager creates a download manager
+// NewManager creates a download manager and starts its workers.
 func NewManager(maxConcurrent int, client *ytdlp.Client, st *store.Store) *Manager {
 	if maxConcurrent <= 0 {
 		maxConcurrent = 3
 	}
-	return &Manager{
-		taskMap:       make(map[string]*Task),
-		maxConcurrent: maxConcurrent,
-		client:        client,
-		store:         st,
-		queue:         make(chan *Task, 100),
-		done:          make(chan struct{}),
+	ctx, stop := context.WithCancel(context.Background())
+	m := &Manager{
+		taskMap: make(map[string]*Task),
+		ctx:     ctx,
+		stop:    stop,
+		client:  client,
+		store:   st,
 	}
-}
-
-// SetProgram sets the tea.Program reference for sending messages
-func (m *Manager) SetProgram(p *tea.Program) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.program = p
-}
-
-// Start launches worker goroutines
-func (m *Manager) Start() {
-	for i := 0; i < m.maxConcurrent; i++ {
+	m.cond = sync.NewCond(&m.mu)
+	for i := 0; i < maxConcurrent; i++ {
+		m.workers.Add(1)
 		go m.worker()
 	}
+	return m
 }
 
 func (m *Manager) worker() {
+	defer m.workers.Done()
 	for {
-		select {
-		case task := <-m.queue:
-			if task == nil {
-				return
-			}
-			m.mu.Lock()
-			m.activeCount++
-			p := m.program
+		m.mu.Lock()
+		for len(m.pending) == 0 && !m.closed {
+			m.cond.Wait()
+		}
+		if m.closed {
 			m.mu.Unlock()
-
-			if p != nil {
-				task.Start(p)
-			}
-
-			m.mu.Lock()
-			m.activeCount--
-			m.mu.Unlock()
-
-			// Persist final state
-			if m.store != nil {
-				m.persistTask(task)
-			}
-
-		case <-m.done:
 			return
 		}
+		task := m.pending[0]
+		m.pending = m.pending[1:]
+		m.mu.Unlock()
+
+		task.Start(m.ctx)
+		m.persistTask(task)
 	}
+}
+
+// schedule appends a task to the pending queue without blocking.
+func (m *Manager) schedule(task *Task) {
+	m.mu.Lock()
+	m.pending = append(m.pending, task)
+	m.mu.Unlock()
+	m.cond.Signal()
 }
 
 // Enqueue adds a task to the download queue
@@ -91,25 +83,8 @@ func (m *Manager) Enqueue(task *Task) {
 	m.taskMap[task.ID] = task
 	m.mu.Unlock()
 
-	// Persist to store
-	if m.store != nil {
-		record := store.DownloadRecord{
-			ID:         task.ID,
-			VideoID:    task.VideoID,
-			Title:      task.Title,
-			URL:        task.URL,
-			FormatID:   task.FormatID,
-			OutputPath: task.OutputPath,
-			State:      string(task.State),
-			EmbedSubs:  task.Opts.EmbedSubs,
-			EmbedMeta:  task.Opts.EmbedMetadata,
-			EmbedChaps: task.Opts.EmbedChapters,
-			CreatedAt:  task.CreatedAt,
-		}
-		m.store.SaveDownload(record)
-	}
-
-	m.queue <- task
+	m.persistTask(task)
+	m.schedule(task)
 }
 
 // EnqueueBatch enqueues multiple tasks
@@ -139,62 +114,59 @@ func (m *Manager) GetTasks() []*Task {
 	return result
 }
 
-// ActiveCount returns the number of actively downloading tasks
-func (m *Manager) ActiveCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.activeCount
-}
-
 // PauseTask pauses a task
 func (m *Manager) PauseTask(id string) {
-	m.mu.Lock()
-	task := m.taskMap[id]
-	m.mu.Unlock()
-	if task != nil {
+	if task := m.GetTask(id); task != nil {
 		task.Pause()
 		m.persistTask(task)
 	}
 }
 
-// ResumeTask re-queues a paused or failed task without blocking the caller.
+// ResumeTask re-queues a paused or failed task.
 func (m *Manager) ResumeTask(id string) {
-	m.mu.Lock()
-	task := m.taskMap[id]
-	m.mu.Unlock()
-	if task != nil && task.PrepareResume() {
+	if task := m.GetTask(id); task != nil && task.PrepareResume() {
 		m.persistTask(task)
-		// Send back to the worker pool queue (buffered, non-blocking for typical sizes)
-		m.queue <- task
+		m.schedule(task)
 	}
 }
 
 // CancelTask cancels a task
 func (m *Manager) CancelTask(id string) {
-	m.mu.Lock()
-	task := m.taskMap[id]
-	m.mu.Unlock()
-	if task != nil {
-		task.Cancel(false)
+	if task := m.GetTask(id); task != nil {
+		task.Cancel()
 		m.persistTask(task)
 	}
 }
 
-// Shutdown cancels all active downloads and persists state
-func (m *Manager) Shutdown() {
-	m.shutdownOnce.Do(func() { close(m.done) })
+// Shutdown stops all downloads, leaving unfinished ones resumable, and
+// returns how many were interrupted.
+func (m *Manager) Shutdown() int {
 	m.mu.Lock()
-	tasks := make([]*Task, len(m.tasks))
-	copy(tasks, m.tasks)
+	m.closed = true
+	tasks := append([]*Task(nil), m.tasks...)
 	m.mu.Unlock()
+	m.cond.Broadcast()
+	m.stop()
 
+	// Give yt-dlp a moment to exit cleanly so no process outlives the app.
+	done := make(chan struct{})
+	go func() {
+		m.workers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(6 * time.Second):
+	}
+
+	interrupted := 0
 	for _, t := range tasks {
-		state := t.GetState()
-		if state == StateDownloading || state == StateQueued {
-			t.Cancel(false)
+		if s := t.GetState(); s == StateQueued || s == StatePaused || s == StateDownloading {
+			interrupted++
 		}
 		m.persistTask(t)
 	}
+	return interrupted
 }
 
 func (m *Manager) persistTask(task *Task) {
@@ -204,7 +176,7 @@ func (m *Manager) persistTask(task *Task) {
 	record := store.DownloadRecord{
 		ID:          task.ID,
 		VideoID:     task.VideoID,
-		Title:       task.Title,
+		Title:       task.GetTitle(),
 		URL:         task.URL,
 		FormatID:    task.FormatID,
 		OutputPath:  task.GetOutputPath(),
@@ -219,25 +191,4 @@ func (m *Manager) persistTask(task *Task) {
 		record.Error = err.Error()
 	}
 	m.store.SaveDownload(record)
-}
-
-// CurrentTask returns the first actively downloading task, or nil
-func (m *Manager) CurrentTask() *Task {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, t := range m.tasks {
-		if t.GetState() == StateDownloading {
-			return t
-		}
-	}
-	return nil
-}
-
-// TotalSpeed returns a formatted total download speed across all active tasks
-func (m *Manager) TotalSpeed() string {
-	// For now, return the current task's speed
-	if t := m.CurrentTask(); t != nil {
-		return t.GetProgress().Speed
-	}
-	return ""
 }

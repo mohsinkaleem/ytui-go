@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mohsinkaleem/ytui-go/internal/styles"
 	"github.com/mohsinkaleem/ytui-go/internal/types"
 )
@@ -23,11 +24,18 @@ type FormatListModel struct {
 	ComboIdx    int
 	Width       int
 	Height      int
+
+	widths colWidths
+	counts [2]int // number of video and audio formats, for the tab labels
 }
 
-// colWidths defines fixed column widths for format table: quality, ext, vcodec, acodec, fps, resolution, size
-// They are computed dynamically from the current item set.
-type colWidths [7]int
+// colStrings holds one table row: id, quality, ext, vcodec, acodec, fps, resolution, size.
+type colStrings [8]string
+
+// colWidths holds the display width of each table column.
+type colWidths [8]int
+
+var formatHeaders = colStrings{"ID", "QUALITY", "EXT", "VIDEO", "AUDIO", "FPS", "RESOLUTION", "SIZE"}
 
 // formatItemDelegate renders format items with aligned columns
 type formatItemDelegate struct {
@@ -38,70 +46,57 @@ func (d formatItemDelegate) Height() int                             { return 1 
 func (d formatItemDelegate) Spacing() int                            { return 0 }
 func (d formatItemDelegate) Update(_ tea.Msg, _ *list.Model) tea.Cmd { return nil }
 
-// formatCols extracts the 7 display columns for a FormatItem.
-func formatCols(item types.FormatItem) [7]string {
-	// quality
-	quality := item.FormatNote
-	if item.Height > 0 {
-		quality = fmt.Sprintf("%dp", item.Height)
-	} else if item.ABR > 0 {
-		quality = fmt.Sprintf("%.0fkbps", item.ABR)
-	}
-
-	// ext
-	ext := item.Ext
-
-	// vcodec
-	vcodec := "—"
-	if item.VCodec != "" && item.VCodec != "none" {
-		vcodec = item.VCodec
-	}
-
-	// acodec
-	acodec := "—"
-	if item.ACodec != "" && item.ACodec != "none" {
-		acodec = item.ACodec
-	}
-
-	// fps
+// formatCols extracts the display columns for a FormatItem.
+func formatCols(item types.FormatItem) colStrings {
 	fps := ""
 	if item.FPS > 0 {
-		fps = fmt.Sprintf("%.0ffps", item.FPS)
+		fps = fmt.Sprintf("%.0f", item.FPS)
 	}
-
-	// resolution
 	res := ""
 	if item.Width > 0 && item.Height > 0 {
 		res = fmt.Sprintf("%d×%d", item.Width, item.Height)
 	}
-
-	// size
-	size := item.HumanSize()
-
-	return [7]string{quality, ext, vcodec, acodec, fps, res, size}
+	return colStrings{item.FormatID, item.QualityLabel(), item.Ext, codecName(item.VCodec), codecName(item.ACodec), fps, res, item.HumanSize()}
 }
 
-// computeColWidths calculates the max width of each column across all items.
+// codecName shortens codec strings like "avc1.640028" to their family name.
+func codecName(codec string) string {
+	if codec == "" || codec == "none" {
+		return "—"
+	}
+	name, _, _ := strings.Cut(codec, ".")
+	return name
+}
+
+// computeColWidths calculates the width of each column across the header and items.
 func computeColWidths(items []list.Item) colWidths {
-	// minimum widths so headers / empty lists still look reasonable
-	mins := colWidths{5, 4, 6, 6, 3, 7, 4}
 	var w colWidths
-	for i, m := range mins {
-		w[i] = m
+	for i, h := range formatHeaders {
+		w[i] = lipgloss.Width(h)
 	}
 	for _, li := range items {
-		f, ok := li.(types.FormatItem)
-		if !ok {
-			continue
-		}
-		cols := formatCols(f)
-		for i, c := range cols {
-			if len(c) > w[i] {
-				w[i] = len(c)
+		if f, ok := li.(types.FormatItem); ok {
+			for i, c := range formatCols(f) {
+				w[i] = max(w[i], lipgloss.Width(c))
 			}
 		}
 	}
 	return w
+}
+
+// row joins cols into an aligned table line.
+func (w colWidths) row(cols colStrings) string {
+	var b strings.Builder
+	for i, c := range cols {
+		if i > 0 {
+			b.WriteString("  ")
+		}
+		if i < len(cols)-1 {
+			c = padRight(c, w[i])
+		}
+		b.WriteString(c)
+	}
+	return b.String()
 }
 
 func (d formatItemDelegate) Render(w io.Writer, m list.Model, index int, listItem list.Item) {
@@ -110,117 +105,122 @@ func (d formatItemDelegate) Render(w io.Writer, m list.Model, index int, listIte
 		return
 	}
 
-	isSelected := index == m.Index()
-	cols := formatCols(item)
-	widths := d.widths
-
-	// Build aligned line using fixed-width columns separated by two spaces
-	line := fmt.Sprintf("%-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s",
-		widths[0], cols[0],
-		widths[1], cols[1],
-		widths[2], cols[2],
-		widths[3], cols[3],
-		widths[4], cols[4],
-		widths[5], cols[5],
-		cols[6],
-	)
-
-	if isSelected {
-		content := styles.ListSelectedTitleStyle.Render(line)
-		fmt.Fprint(w, styles.ListSelectedItemStyle.Render(content))
+	line := styles.Truncate(d.widths.row(formatCols(item)), m.Width()-3)
+	if index == m.Index() {
+		fmt.Fprint(w, styles.ListSelectedItemStyle.Render(styles.ListSelectedTitleStyle.Render(line)))
 	} else {
-		fmt.Fprint(w, styles.ListItemStyle.Render(styles.ListTitleStyle.Render(line)))
+		fmt.Fprint(w, styles.ListItemStyle.Render(styles.TextStyle.Render(line)))
 	}
 }
 
 // NewFormatListModel creates a new format list model
 func NewFormatListModel() FormatListModel {
-	delegate := formatItemDelegate{widths: computeColWidths(nil)}
-	l := list.New([]list.Item{}, delegate, 0, 0)
-	l.SetShowTitle(false)
-	l.SetShowStatusBar(false)
+	l := newList(formatItemDelegate{widths: computeColWidths(nil)})
 	l.SetFilteringEnabled(false)
-	l.SetShowHelp(false)
+	l.SetStatusBarItemName("format", "formats")
 
 	ti := textinput.New()
-	ti.Placeholder = "e.g., 140+137"
-	ti.CharLimit = 100
-	ti.Width = 30
+	ti.Placeholder = "e.g. 137+140 or bestvideo[height<=720]+bestaudio"
+	ti.CharLimit = 200
+	ti.Width = 50
 	ti.Prompt = "❯ "
-	ti.PromptStyle = styles.InputPromptStyle
 
-	return FormatListModel{
+	m := FormatListModel{
 		List:        l,
 		ActiveTab:   types.FormatTabVideo,
 		CustomInput: ti,
+		widths:      computeColWidths(nil),
 	}
+	m.ApplyTheme()
+	return m
+}
+
+// ApplyTheme re-applies the current theme to the custom format input.
+func (m *FormatListModel) ApplyTheme() {
+	styleInput(&m.CustomInput)
 }
 
 // SetFormats sets the available formats and video info
 func (m *FormatListModel) SetFormats(formats []types.FormatItem, video types.VideoItem) {
 	m.Formats = formats
 	m.Video = video
-	m.ActiveTab = types.FormatTabVideo
 	m.Combos = suggestFormatCombos(formats)
 	m.ComboIdx = 0
-	m.updateListItems()
+	m.CustomInput.SetValue("")
+
+	m.counts = [2]int{}
+	for _, f := range formats {
+		switch {
+		case isVideoFormat(f):
+			m.counts[0]++
+		case f.IsAudioOnly():
+			m.counts[1]++
+		}
+	}
+
+	tab := types.FormatTabVideo
+	if m.counts[0] == 0 && m.counts[1] > 0 {
+		tab = types.FormatTabAudio // e.g. music sites
+	}
+	m.setTab(tab)
+}
+
+// isVideoFormat reports whether f belongs on the Video tab (unknown codecs included).
+func isVideoFormat(f types.FormatItem) bool {
+	return f.HasVideoAndAudio() || f.IsVideoOnly() || (f.VCodec == "" && f.ACodec == "")
 }
 
 // SetSize updates dimensions
 func (m *FormatListModel) SetSize(w, h int) {
 	m.Width = w
 	m.Height = h
-	m.List.SetSize(w, h-10) // reserve space for header + tabs
+	m.CustomInput.Width = max(min(w, 72)-lipgloss.Width(m.CustomInput.Prompt)-1, 10)
+	m.resizeList()
+}
+
+// resizeList fits the list below the header lines drawn by View.
+func (m *FormatListModel) resizeList() {
+	header := 6 // title, details, blank, tabs, blank, table header
+	if m.ActiveTab == types.FormatTabVideo {
+		header++ // auto-merge note
+	}
+	m.List.SetSize(m.Width, max(m.Height-header, 1))
 }
 
 // NextTab cycles to next tab
 func (m *FormatListModel) NextTab() {
-	m.ActiveTab = (m.ActiveTab + 1) % 3
-	if m.ActiveTab == types.FormatTabCustom {
-		m.CustomInput.Focus()
-	} else {
-		m.CustomInput.Blur()
-	}
-	m.updateListItems()
+	m.setTab((m.ActiveTab + 1) % 3)
 }
 
 // PrevTab cycles to previous tab
 func (m *FormatListModel) PrevTab() {
-	if m.ActiveTab == 0 {
-		m.ActiveTab = 2
-	} else {
-		m.ActiveTab--
-	}
-	if m.ActiveTab == types.FormatTabCustom {
+	m.setTab((m.ActiveTab + 2) % 3)
+}
+
+// MoveCombo moves the preset cursor on the Custom tab.
+func (m *FormatListModel) MoveCombo(delta int) {
+	m.ComboIdx = max(min(m.ComboIdx+delta, len(m.Combos)-1), 0)
+}
+
+func (m *FormatListModel) setTab(tab types.FormatTab) {
+	m.ActiveTab = tab
+	if tab == types.FormatTabCustom {
 		m.CustomInput.Focus()
 	} else {
 		m.CustomInput.Blur()
 	}
-	m.updateListItems()
-}
 
-func (m *FormatListModel) updateListItems() {
 	var items []list.Item
-	headerExtra := 0
 	for _, f := range m.Formats {
-		switch m.ActiveTab {
-		case types.FormatTabVideo:
-			headerExtra = 2 // auto-merge note + blank line
-			if f.HasVideoAndAudio() || f.IsVideoOnly() {
-				items = append(items, f)
-			}
-		case types.FormatTabAudio:
-			if f.IsAudioOnly() {
-				items = append(items, f)
-			}
-		default:
+		if (tab == types.FormatTabVideo && isVideoFormat(f)) || (tab == types.FormatTabAudio && f.IsAudioOnly()) {
 			items = append(items, f)
 		}
 	}
-	// Compute aligned column widths from the visible item set
-	m.List.SetDelegate(formatItemDelegate{widths: computeColWidths(items)})
+	m.widths = computeColWidths(items)
+	m.List.SetDelegate(formatItemDelegate{widths: m.widths})
 	m.List.SetItems(items)
-	m.List.SetSize(m.Width, m.Height-10-headerExtra)
+	m.List.ResetSelected() // a stale cursor past the end would select nothing
+	m.resizeList()
 }
 
 // SelectedFormat returns the selected format
@@ -233,113 +233,97 @@ func (m *FormatListModel) SelectedFormat() (types.FormatItem, bool) {
 	return f, ok
 }
 
-// IsVideoOnlyFormat checks if a formatID corresponds to a video-only format
-func (m *FormatListModel) IsVideoOnlyFormat(formatID string) bool {
-	for _, f := range m.Formats {
-		if f.FormatID == formatID {
-			return f.IsVideoOnly()
-		}
-	}
-	return false
-}
-
-// GetFormatID returns the format ID to use for download
+// GetFormatID returns the yt-dlp format selector for the current selection,
+// or "" when nothing is selected. Video-only formats are paired with the best audio.
 func (m *FormatListModel) GetFormatID() string {
 	if m.ActiveTab == types.FormatTabCustom {
-		customVal := strings.TrimSpace(m.CustomInput.Value())
-		if customVal != "" {
-			return customVal
+		if custom := strings.TrimSpace(m.CustomInput.Value()); custom != "" {
+			return custom
 		}
-		// Use selected combo
 		if m.ComboIdx >= 0 && m.ComboIdx < len(m.Combos) {
 			return m.Combos[m.ComboIdx].FormatID
 		}
-		return "bestvideo+bestaudio/best"
+		return ""
 	}
-	if f, ok := m.SelectedFormat(); ok {
-		return f.FormatID
+	f, ok := m.SelectedFormat()
+	if !ok {
+		return ""
 	}
-	return "best"
+	if f.IsVideoOnly() {
+		return f.FormatID + "+bestaudio"
+	}
+	return f.FormatID
 }
 
 // View renders the format list screen
 func (m *FormatListModel) View() string {
 	var b strings.Builder
 
-	// Video info header
-	b.WriteString(styles.VideoTitleStyle.Render(m.Video.Title))
+	b.WriteString(styles.VideoTitleStyle.Render(styles.Truncate(m.Video.Title, m.Width)))
 	b.WriteString("\n")
-
-	details := []string{}
-	if m.Video.DurationString != "" {
-		details = append(details, "⏱ "+m.Video.DurationString)
-	}
-	if m.Video.ViewCount > 0 {
-		details = append(details, "👁 "+formatViewCount(m.Video.ViewCount))
-	}
-	if m.Video.Channel != "" {
-		details = append(details, "📺 "+m.Video.Channel)
-	}
-	if len(details) > 0 {
-		b.WriteString(styles.VideoDetailStyle.Render(strings.Join(details, " • ")))
-	}
+	b.WriteString(styles.VideoDetailStyle.Render(styles.Truncate(videoDetails(m.Video), m.Width)))
 	b.WriteString("\n\n")
 
-	// Tab bar
-	tabs := []string{"Video", "Audio", "Custom"}
+	tabs := []string{fmt.Sprintf("Video (%d)", m.counts[0]), fmt.Sprintf("Audio (%d)", m.counts[1]), "Custom"}
 	for i, tab := range tabs {
 		if types.FormatTab(i) == m.ActiveTab {
 			b.WriteString(styles.TabActiveStyle.Render(tab))
 		} else {
 			b.WriteString(styles.TabInactiveStyle.Render(tab))
 		}
-		if i < len(tabs)-1 {
-			b.WriteString("  ")
-		}
 	}
 	b.WriteString("\n\n")
 
-	// Content
 	if m.ActiveTab == types.FormatTabCustom {
-		// Recommended combinations
-		if len(m.Combos) > 0 {
-			b.WriteString(styles.BoldStyle.Render("Recommended:"))
-			b.WriteString("\n\n")
-			for i, c := range m.Combos {
-				cursor := "  "
-				var line string
-				label := fmt.Sprintf("%-28s", c.Label)
-				fmtID := styles.MutedStyle.Render(c.FormatID)
-				sizeStr := ""
-				if c.Size > 0 {
-					sizeStr = "  " + styles.SpeedStyle.Render("~"+comboHumanSize(c.Size))
-				}
-				if i == m.ComboIdx {
-					cursor = styles.AccentStyle.Render("❯ ")
-					line = cursor + styles.ListSelectedTitleStyle.Render(label) + "  " + fmtID + sizeStr
-				} else {
-					line = cursor + styles.ListTitleStyle.Render(label) + "  " + fmtID + sizeStr
-				}
-				b.WriteString(line)
-				b.WriteString("\n")
-			}
-			b.WriteString("\n")
-		}
-
-		b.WriteString(styles.BoldStyle.Render("Custom format:"))
-		b.WriteString("\n")
-		b.WriteString(m.CustomInput.View())
-		b.WriteString("\n\n")
-		b.WriteString(styles.MutedStyle.Render("↑/↓ to select combo  •  type a custom format  •  enter to download"))
-	} else {
-		// Video tab note about auto-merge
-		if m.ActiveTab == types.FormatTabVideo {
-			b.WriteString(styles.MutedStyle.Render("Formats with no(-) audio are auto-merged with best audio"))
-			b.WriteString("\n\n")
-		}
-		b.WriteString(m.List.View())
+		b.WriteString(m.customView())
+		return b.String()
 	}
 
+	if m.ActiveTab == types.FormatTabVideo {
+		b.WriteString(styles.MutedStyle.Render(styles.Truncate("Video-only formats (AUDIO —) are merged with the best audio automatically", m.Width)))
+		b.WriteString("\n")
+	}
+	b.WriteString(styles.TableHeaderStyle.Render(styles.Truncate("   "+m.widths.row(formatHeaders), m.Width)))
+	b.WriteString("\n")
+	b.WriteString(m.List.View())
+
+	return b.String()
+}
+
+func (m *FormatListModel) customView() string {
+	var b strings.Builder
+
+	if len(m.Combos) > 0 {
+		b.WriteString(styles.BoldStyle.Render("Presets"))
+		b.WriteString("\n")
+
+		labelW, idW := 0, 0
+		for _, c := range m.Combos {
+			labelW = max(labelW, lipgloss.Width(c.Label))
+			idW = max(idW, lipgloss.Width(c.FormatID))
+		}
+		// A typed format wins over the presets, so only show the cursor when it's empty.
+		usePreset := strings.TrimSpace(m.CustomInput.Value()) == ""
+		for i, c := range m.Combos {
+			cursor, labelStyle := "  ", styles.TextStyle
+			if usePreset && i == m.ComboIdx {
+				cursor, labelStyle = styles.AccentStyle.Render("❯ "), styles.ListSelectedTitleStyle
+			}
+			line := cursor + labelStyle.Render(padRight(c.Label, labelW)) + "  " + styles.MutedStyle.Render(padRight(c.FormatID, idW))
+			if c.Size > 0 {
+				line += "  " + styles.SpeedStyle.Render("~"+formatBytes(c.Size))
+			}
+			b.WriteString(styles.Truncate(line, m.Width))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString(styles.BoldStyle.Render("Custom format"))
+	b.WriteString("\n")
+	b.WriteString(m.CustomInput.View())
+	b.WriteString("\n")
+	b.WriteString(styles.MutedStyle.Render(styles.Truncate("Any yt-dlp -f selector; format IDs are listed on the Video and Audio tabs", m.Width)))
 	return b.String()
 }
 
@@ -427,23 +411,4 @@ func suggestFormatCombos(formats []types.FormatItem) []types.FormatCombo {
 	}
 
 	return combos
-}
-
-// comboHumanSize converts a byte count to a human-readable string for combo labels.
-func comboHumanSize(n int64) string {
-	const (
-		KB = 1024
-		MB = 1024 * KB
-		GB = 1024 * MB
-	)
-	switch {
-	case n >= GB:
-		return fmt.Sprintf("%.1f GB", float64(n)/float64(GB))
-	case n >= MB:
-		return fmt.Sprintf("%.1f MB", float64(n)/float64(MB))
-	case n >= KB:
-		return fmt.Sprintf("%.1f KB", float64(n)/float64(KB))
-	default:
-		return fmt.Sprintf("%d B", n)
-	}
 }

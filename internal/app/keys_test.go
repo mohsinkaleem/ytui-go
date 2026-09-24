@@ -1,86 +1,40 @@
 package app
 
 import (
-	"strings"
 	"testing"
 
-	"github.com/charmbracelet/bubbles/key"
+	"github.com/mohsinkaleem/ytui-go/internal/types"
 )
 
-func TestKeyBindingsNotEmpty(t *testing.T) {
-	bindings := []struct {
-		name    string
-		binding key.Binding
-	}{
-		{"KeyQuit", KeyQuit},
-		{"KeyHelp", KeyHelp},
-		{"KeyBack", KeyBack},
-		{"KeyEnter", KeyEnter},
-		{"KeySlash", KeySlash},
-		{"KeyCopy", KeyCopy},
-		{"KeySpace", KeySpace},
-		{"KeySelectAll", KeySelectAll},
-		{"KeyDownload", KeyDownload},
-		{"KeyPlay", KeyPlay},
-		{"KeyPause", KeyPause},
-		{"KeyCancel", KeyCancel},
-		{"KeyTab", KeyTab},
-		{"KeyShiftTab", KeyShiftTab},
-		{"KeyToggleSubs", KeyToggleSubs},
-		{"KeyToggleMeta", KeyToggleMeta},
-		{"KeyToggleChapters", KeyToggleChapters},
-		{"KeyRetry", KeyRetry},
-		{"KeySkip", KeySkip},
+func TestRenderHints(t *testing.T) {
+	if got := renderHints(80, "enter", "search", "/", "commands"); got != "enter search • / commands" {
+		t.Errorf("renderHints = %q", got)
 	}
-	for _, tt := range bindings {
-		t.Run(tt.name, func(t *testing.T) {
-			keys := tt.binding.Keys()
-			if len(keys) == 0 {
-				t.Errorf("%s has no keys", tt.name)
-			}
-		})
+	if got := renderHints(80, "", "mpv is running"); got != "mpv is running" {
+		t.Errorf("renderHints without key = %q", got)
 	}
 }
 
-func TestGetStatusKeysText(t *testing.T) {
-	states := []string{"SearchInput", "VideoList", "FormatList", "Download", "Loading", "VideoPlaying", "ResumeList"}
-	for _, state := range states {
-		t.Run(state, func(t *testing.T) {
-			got := GetStatusKeysText(state)
-			if state == "Loading" || state == "VideoPlaying" || state == "ResumeList" {
-				if got == "" {
-					t.Errorf("GetStatusKeysText(%q) should return non-empty", state)
-				}
-				return
-			}
-			// All interactive states should mention at least one key hint
-			if got == "" {
-				t.Errorf("GetStatusKeysText(%q) should return non-empty", state)
-			}
-		})
+func TestRenderHintsDropsWhatDoesNotFit(t *testing.T) {
+	if got := renderHints(14, "enter", "search", "/", "commands"); got != "enter search" {
+		t.Errorf("renderHints(14) = %q, want only the first hint", got)
 	}
-	// Unknown state should return empty
-	if got := GetStatusKeysText("nonexistent"); got != "" {
-		t.Errorf("GetStatusKeysText(nonexistent) should be empty, got %q", got)
+	if got := renderHints(80); got != "" {
+		t.Errorf("renderHints() with no pairs = %q, want empty", got)
 	}
 }
 
-func TestFormatKeysOutput(t *testing.T) {
-	result := FormatKeys(KeyQuit, "exit", KeyHelp, "help")
-	if result == "" {
-		t.Error("FormatKeys should produce non-empty output")
+func TestKeyHintsForEveryState(t *testing.T) {
+	m := newTestModel(t, 80, 24)
+	states := []types.State{
+		types.StateSearchInput, types.StateLoading, types.StateVideoList, types.StateFormatList,
+		types.StateDownload, types.StateVideoPlaying, types.StateResumeList,
 	}
-	if !strings.Contains(result, "exit") {
-		t.Errorf("result should contain exit, got %q", result)
-	}
-	if !strings.Contains(result, "|") {
-		t.Errorf("result should contain separator, got %q", result)
-	}
-}
-
-func TestFormatKeysEmpty(t *testing.T) {
-	result := FormatKeys()
-	if result != "" {
-		t.Errorf("FormatKeys() with no args should be empty, got %q", result)
+	for _, s := range states {
+		m.State = s
+		hints := m.keyHints()
+		if len(hints) == 0 || len(hints)%2 != 0 {
+			t.Errorf("keyHints(%s) = %v, want non-empty key/description pairs", s, hints)
+		}
 	}
 }

@@ -1,29 +1,34 @@
 package styles
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+)
 
 // Package-level style variables — rebuilt when theme changes
 var (
 	// Layout
-	AppStyle     lipgloss.Style
-	ContentStyle lipgloss.Style
+	AppStyle lipgloss.Style
 
 	// Section headers
 	SectionHeaderStyle lipgloss.Style
-	SubtitleStyle      lipgloss.Style
 
-	// Status bar
-	StatusBarStyle  lipgloss.Style
-	StatusKeyStyle  lipgloss.Style
-	StatusDescStyle lipgloss.Style
-	StatusSepStyle  lipgloss.Style
+	// Status bar; every segment carries the bar background so inner resets don't punch holes in it
+	StatusBarStyle   lipgloss.Style
+	StatusKeyStyle   lipgloss.Style
+	StatusDescStyle  lipgloss.Style
+	StatusSepStyle   lipgloss.Style
+	StatusInfoStyle  lipgloss.Style
+	StatusErrorStyle lipgloss.Style
 
 	// Input
 	InputStyle       lipgloss.Style
 	InputPromptStyle lipgloss.Style
 	InputPlaceholder lipgloss.Style
+	InputBoxStyle    lipgloss.Style
 
 	// Text variants
+	TextStyle    lipgloss.Style
 	MutedStyle   lipgloss.Style
 	BoldStyle    lipgloss.Style
 	ErrorStyle   lipgloss.Style
@@ -31,7 +36,6 @@ var (
 	WarningStyle lipgloss.Style
 	InfoStyle    lipgloss.Style
 	AccentStyle  lipgloss.Style
-	PinkStyle    lipgloss.Style
 
 	// Spinner
 	SpinnerStyle lipgloss.Style
@@ -44,18 +48,12 @@ var (
 	ListItemStyle          lipgloss.Style
 	ListSelectedItemStyle  lipgloss.Style
 	MultiSelectCheckStyle  lipgloss.Style
+	LiveBadgeStyle         lipgloss.Style
+	TableHeaderStyle       lipgloss.Style
 
 	// Tab bar
 	TabActiveStyle   lipgloss.Style
 	TabInactiveStyle lipgloss.Style
-	TabGapStyle      lipgloss.Style
-
-	// Progress
-	ProgressStyle     lipgloss.Style
-	ProgressFillColor lipgloss.Color
-
-	// Toast
-	ToastStyle lipgloss.Style
 
 	// Download queue
 	QueueItemPendingStyle  lipgloss.Style
@@ -67,9 +65,6 @@ var (
 	// Logo
 	LogoStyle    lipgloss.Style
 	LogoSubStyle lipgloss.Style
-
-	// Borders
-	BorderStyle lipgloss.Style
 
 	// Option toggles
 	OptionOnStyle  lipgloss.Style
@@ -103,31 +98,20 @@ func rebuildStyles() {
 
 	// Layout
 	AppStyle = lipgloss.NewStyle().Padding(0, 1)
-	ContentStyle = lipgloss.NewStyle()
 
 	// Section headers
 	SectionHeaderStyle = lipgloss.NewStyle().
 		Foreground(t.Text).
-		Bold(true).
-		MarginBottom(1)
-
-	SubtitleStyle = lipgloss.NewStyle().
-		Foreground(t.Secondary)
-
-	// Status bar
-	StatusBarStyle = lipgloss.NewStyle().
-		Foreground(t.Secondary).
-		Background(t.Surface)
-
-	StatusKeyStyle = lipgloss.NewStyle().
-		Foreground(t.Pink).
 		Bold(true)
 
-	StatusDescStyle = lipgloss.NewStyle().
-		Foreground(t.Secondary)
-
-	StatusSepStyle = lipgloss.NewStyle().
-		Foreground(t.Muted)
+	// Status bar
+	bar := lipgloss.NewStyle().Background(t.Surface)
+	StatusBarStyle = bar.Foreground(t.Secondary)
+	StatusKeyStyle = bar.Foreground(t.Pink).Bold(true)
+	StatusDescStyle = bar.Foreground(t.Secondary)
+	StatusSepStyle = bar.Foreground(t.Muted)
+	StatusInfoStyle = bar.Foreground(t.Info)
+	StatusErrorStyle = bar.Foreground(t.Error).Bold(true)
 
 	// Input
 	InputStyle = lipgloss.NewStyle().
@@ -140,7 +124,13 @@ func rebuildStyles() {
 	InputPlaceholder = lipgloss.NewStyle().
 		Foreground(t.Muted)
 
+	InputBoxStyle = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(t.Accent).
+		Padding(0, 1)
+
 	// Text variants
+	TextStyle = lipgloss.NewStyle().Foreground(t.Text)
 	MutedStyle = lipgloss.NewStyle().Foreground(t.Muted)
 	BoldStyle = lipgloss.NewStyle().Bold(true).Foreground(t.Text)
 	ErrorStyle = lipgloss.NewStyle().Foreground(t.Error)
@@ -148,7 +138,6 @@ func rebuildStyles() {
 	WarningStyle = lipgloss.NewStyle().Foreground(t.Warning)
 	InfoStyle = lipgloss.NewStyle().Foreground(t.Info)
 	AccentStyle = lipgloss.NewStyle().Foreground(t.Accent)
-	PinkStyle = lipgloss.NewStyle().Foreground(t.Pink)
 
 	// Spinner
 	SpinnerStyle = lipgloss.NewStyle().Foreground(t.Pink)
@@ -176,7 +165,16 @@ func rebuildStyles() {
 		Foreground(t.Pink)
 
 	MultiSelectCheckStyle = lipgloss.NewStyle().
-		Foreground(t.Success)
+		Foreground(t.Success).
+		Bold(true)
+
+	LiveBadgeStyle = lipgloss.NewStyle().
+		Foreground(t.Error).
+		Bold(true)
+
+	TableHeaderStyle = lipgloss.NewStyle().
+		Foreground(t.Muted).
+		Bold(true)
 
 	// Tab bar
 	TabActiveStyle = lipgloss.NewStyle().
@@ -188,17 +186,6 @@ func rebuildStyles() {
 	TabInactiveStyle = lipgloss.NewStyle().
 		Foreground(t.Secondary).
 		Padding(0, 2)
-
-	TabGapStyle = lipgloss.NewStyle().
-		Foreground(t.Muted)
-
-	// Progress
-	ProgressStyle = lipgloss.NewStyle()
-	ProgressFillColor = t.Info
-
-	// Toast
-	ToastStyle = lipgloss.NewStyle().
-		Foreground(t.Info)
 
 	// Download queue
 	QueueItemPendingStyle = lipgloss.NewStyle().Foreground(t.Muted)
@@ -215,10 +202,6 @@ func rebuildStyles() {
 	LogoSubStyle = lipgloss.NewStyle().
 		Foreground(t.Secondary)
 
-	// Borders
-	BorderStyle = lipgloss.NewStyle().
-		Foreground(t.Muted)
-
 	// Options
 	OptionOnStyle = lipgloss.NewStyle().Foreground(t.Success)
 	OptionOffStyle = lipgloss.NewStyle().Foreground(t.Muted)
@@ -233,11 +216,25 @@ func rebuildStyles() {
 	VideoDetailStyle = lipgloss.NewStyle().Foreground(t.Secondary)
 
 	// Slash commands
-	SlashSelectedStyle = lipgloss.NewStyle().Foreground(t.Accent)
+	SlashSelectedStyle = lipgloss.NewStyle().Foreground(t.Accent).Bold(true)
 	SlashNormalStyle = lipgloss.NewStyle().Foreground(t.Subtext)
 	SlashDescStyle = lipgloss.NewStyle().Foreground(t.Muted)
 
 	// Speed / path
 	SpeedStyle = lipgloss.NewStyle().Foreground(t.Success).Italic(true)
 	PathStyle = lipgloss.NewStyle().Foreground(t.Muted)
+}
+
+// Truncate shortens s to at most width terminal cells, ending with "…".
+func Truncate(s string, width int) string {
+	return ansi.Truncate(s, max(width, 1), "…")
+}
+
+// TruncateLeft keeps the last width cells of s, starting with "…".
+func TruncateLeft(s string, width int) string {
+	width = max(width, 1)
+	if over := ansi.StringWidth(s) - width; over > 0 {
+		return ansi.TruncateLeft(s, over+1, "…")
+	}
+	return s
 }

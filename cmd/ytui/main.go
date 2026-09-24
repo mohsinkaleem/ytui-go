@@ -3,14 +3,16 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	zone "github.com/lrstanley/bubblezone"
 	"github.com/spf13/cobra"
 
 	"github.com/mohsinkaleem/ytui-go/internal/app"
+	"github.com/mohsinkaleem/ytui-go/internal/download"
 	"github.com/mohsinkaleem/ytui-go/internal/store"
 	"github.com/mohsinkaleem/ytui-go/internal/styles"
+	"github.com/mohsinkaleem/ytui-go/internal/utils"
 	"github.com/mohsinkaleem/ytui-go/internal/ytdlp"
 )
 
@@ -18,95 +20,76 @@ var version = "dev"
 
 func main() {
 	rootCmd := &cobra.Command{
-		Use:     "ytui",
-		Short:   "A beautiful TUI wrapper for yt-dlp",
-		Version: version,
-		RunE:    run,
+		Use:           "ytui",
+		Short:         "A beautiful TUI wrapper for yt-dlp",
+		Version:       version,
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:          run,
 	}
 
-	rootCmd.Flags().String("theme", "", "color theme (mocha, latte, monochrome)")
-	rootCmd.Flags().String("download-dir", "", "default download directory")
+	rootCmd.Flags().String("theme", "", "color theme for this session ("+strings.Join(styles.ThemeNames(), ", ")+")")
+	rootCmd.Flags().String("download-dir", "", "download directory for this session")
 
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
 }
 
-func run(cmd *cobra.Command, args []string) error {
-	// Initialize bubble zone for mouse support
-	zone.NewGlobal()
-
-	// Apply theme if specified
-	if theme, _ := cmd.Flags().GetString("theme"); theme != "" {
-		if !styles.LoadTheme(theme) {
-			fmt.Fprintf(os.Stderr, "Unknown theme: %s\n", theme)
-			os.Exit(1)
+func run(cmd *cobra.Command, _ []string) error {
+	theme, _ := cmd.Flags().GetString("theme")
+	downloadDir, _ := cmd.Flags().GetString("download-dir")
+	if downloadDir != "" {
+		downloadDir = utils.ExpandPath(downloadDir)
+		if info, err := os.Stat(downloadDir); err != nil || !info.IsDir() {
+			return fmt.Errorf("--download-dir %q is not a directory", downloadDir)
 		}
 	}
 
-	// Open store
-	st, err := store.New()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not open database: %v\n", err)
-		// Continue without persistence
-	} else if st.IsReadOnly() {
-		fmt.Fprintln(os.Stderr, "Note: another instance is running; this session is read-only (settings & history won't be saved).")
-	}
-
-	// Load settings from store
-	if st != nil {
-		settings, err := st.GetSettings()
-		if err == nil && settings.Theme != "" {
-			styles.LoadTheme(settings.Theme)
-		}
-	}
-
-	// Create yt-dlp client
 	client, err := ytdlp.NewClient()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\nPlease install yt-dlp: https://github.com/yt-dlp/yt-dlp\n", err)
-		os.Exit(1)
+		return fmt.Errorf("%w\nInstall yt-dlp: https://github.com/yt-dlp/yt-dlp#installation", err)
 	}
 
-	// Apply cookies-from-browser setting
-	if st != nil {
-		if settings, err := st.GetSettings(); err == nil {
-			if settings.CookiesFrom != "" {
-				client.SetCookiesFrom(settings.CookiesFrom)
-			} else if settings.CookiesFile != "" {
-				client.SetCookiesFile(settings.CookiesFile)
-			}
-		}
-	}
-
-	// Create root model
-	model := app.New(st, client)
-
-	// Create program
-	p := tea.NewProgram(
-		model,
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
-	)
-
-	// Set program reference on model for download manager
-	model.SetProgram(p)
-
-	// Run
-	finalModel, err := p.Run()
+	// Open the store; without it the app still works, just without persistence.
+	settings := store.DefaultSettings()
+	var notice string
+	st, err := store.New()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Graceful shutdown
-	if m, ok := finalModel.(app.Model); ok {
-		m.DownloadMgr.Shutdown()
-		if m.Store != nil {
-			m.Store.Close()
+		notice = "Could not open the database: settings and history won't be saved"
+	} else {
+		defer st.Close()
+		if st.IsReadOnly() {
+			notice = "Another ytui is running: settings and history won't be saved"
+		}
+		if s, err := st.GetSettings(); err == nil {
+			settings = s
 		}
 	}
 
-	return nil
+	styles.LoadTheme(settings.Theme)
+	if theme != "" && !styles.LoadTheme(theme) {
+		return fmt.Errorf("unknown theme %q (available: %s)", theme, strings.Join(styles.ThemeNames(), ", "))
+	}
+	client.SetCookiesFrom(settings.CookiesFrom)
+	client.SetCookiesFile(settings.CookiesFile)
+
+	downloads := download.NewManager(settings.MaxConcurrent, client, st)
+	model := app.New(app.Config{
+		Store:       st,
+		Client:      client,
+		Downloads:   downloads,
+		Settings:    settings,
+		DownloadDir: downloadDir,
+		Notice:      notice,
+	})
+
+	_, runErr := tea.NewProgram(model, tea.WithAltScreen()).Run()
+
+	if n := downloads.Shutdown(); n > 0 && st != nil && !st.IsReadOnly() {
+		fmt.Fprintf(os.Stderr, "%d unfinished download(s) saved — start ytui and use /resume to continue.\n", n)
+	}
+	return runErr
 }

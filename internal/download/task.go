@@ -5,209 +5,187 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
+	"io"
 	"strings"
 	"sync"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/google/uuid"
 	"github.com/mohsinkaleem/ytui-go/internal/types"
-	dlpkg "github.com/mohsinkaleem/ytui-go/internal/ytdlp"
+	"github.com/mohsinkaleem/ytui-go/internal/ytdlp"
 )
 
-// Task represents a single download task
+// Task represents a single download task. Exported fields are immutable once
+// the task is enqueued; everything else is guarded by mu.
 type Task struct {
-	ID          string
-	VideoID     string
-	Title       string
-	URL         string
-	FormatID    string
-	OutputPath  string
-	State       TaskState
-	Progress    types.ProgressMsg
-	Error       error
-	Opts        dlpkg.DownloadOpts
-	CreatedAt   time.Time
-	CompletedAt time.Time
+	ID        string
+	VideoID   string
+	URL       string
+	FormatID  string
+	Opts      ytdlp.DownloadOpts
+	CreatedAt time.Time
 
-	mu     sync.Mutex
-	ctx    context.Context
-	cancel context.CancelFunc
-	client *dlpkg.Client
+	mu          sync.Mutex
+	title       string
+	outputPath  string
+	state       TaskState
+	progress    ytdlp.Progress
+	err         error
+	completedAt time.Time
+	cancel      context.CancelFunc
+
+	runMu  sync.Mutex // serializes runs so a quick pause/resume can't overlap
+	client *ytdlp.Client
 }
 
 // NewTask creates a new download task
-func NewTask(video types.VideoItem, formatID string, opts dlpkg.DownloadOpts, client *dlpkg.Client) *Task {
+func NewTask(video types.VideoItem, formatID string, opts ytdlp.DownloadOpts, client *ytdlp.Client) *Task {
 	return &Task{
 		ID:        uuid.New().String(),
 		VideoID:   video.ID,
-		Title:     video.Title,
 		URL:       video.VideoURL(),
 		FormatID:  formatID,
-		State:     StateQueued,
 		Opts:      opts,
 		CreatedAt: time.Now(),
+		title:     video.Title,
+		state:     StateQueued,
 		client:    client,
 	}
 }
 
-// Start launches the download process and sends progress to the program.
-// Blocks until the download completes, fails, or is cancelled.
-func (t *Task) Start(program *tea.Program) {
+// Start runs yt-dlp and blocks until it exits. If ctx is cancelled (manager
+// shutdown) the task is left paused so it can be resumed later.
+func (t *Task) Start(ctx context.Context) {
+	t.runMu.Lock()
+	defer t.runMu.Unlock()
+
 	t.mu.Lock()
-	if !ValidTransition(t.State, StateDownloading) {
+	if !ValidTransition(t.state, StateDownloading) {
 		t.mu.Unlock()
 		return
 	}
-	t.State = StateDownloading
-	t.ctx, t.cancel = context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	t.state = StateDownloading
+	t.err = nil
+	t.cancel = cancel
 	t.mu.Unlock()
 
-	cmd, output, err := t.client.Download(t.ctx, t.URL, t.FormatID, t.Opts)
+	t.finish(ctx, t.run(ctx))
+}
+
+// run executes yt-dlp, recording progress, title and output path as reported.
+func (t *Task) run(ctx context.Context) error {
+	cmd, output, err := t.client.Download(ctx, t.URL, t.FormatID, t.Opts)
 	if err != nil {
-		t.mu.Lock()
-		t.State = StateFailed
-		t.Error = err
-		t.mu.Unlock()
-		program.Send(types.DownloadCompleteMsg{TaskID: t.ID, Err: err})
-		return
+		return err
 	}
 	defer output.Close()
 
-	// Increase scanner buffer for very long yt-dlp output lines
+	var errLine, lastLine string
 	scanner := bufio.NewScanner(output)
-	scanner.Buffer(make([]byte, 4*1024*1024), 4*1024*1024)
-
-	// Collect non-progress lines so we can show the real error message
-	var errLines []string
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
-		line := scanner.Text()
-
-		// Parse output path from yt-dlp destination lines
-		if strings.HasPrefix(line, "[download] Destination:") {
-			path := strings.TrimSpace(strings.TrimPrefix(line, "[download] Destination:"))
-			if path != "" {
-				t.mu.Lock()
-				t.OutputPath = path
-				t.mu.Unlock()
+		line := strings.TrimSpace(scanner.Text())
+		if p, err := ytdlp.ParseProgressLine(line); err == nil {
+			t.mu.Lock()
+			t.progress = *p
+			if p.Title != "" {
+				t.title = p.Title
 			}
+			t.mu.Unlock()
 			continue
 		}
-
-		progress, parseErr := dlpkg.ParseProgressLine(line)
-		if parseErr != nil {
-			// Collect lines that may contain error information
-			trimmed := strings.TrimSpace(line)
-			if strings.Contains(trimmed, "ERROR:") || strings.Contains(trimmed, "error:") {
-				errLines = append(errLines, trimmed)
-			} else if strings.HasPrefix(trimmed, "WARNING:") {
-				// ignore warnings
-			} else if trimmed != "" && !strings.HasPrefix(trimmed, "[") {
-				// collect unrecognised non-status lines (might be Python tracebacks etc.)
-				errLines = append(errLines, trimmed)
-			}
+		if path := ytdlp.ParseOutputPath(line); path != "" {
+			t.mu.Lock()
+			t.outputPath = path
+			t.mu.Unlock()
 			continue
 		}
-
-		msg := types.ProgressMsg{
-			TaskID:          t.ID,
-			Percent:         progress.Percent,
-			DownloadedBytes: progress.DownloadedBytes,
-			TotalBytes:      progress.TotalBytes,
-			Speed:           progress.Speed,
-			ETA:             progress.ETA,
-			Status:          progress.Status,
+		switch {
+		case strings.HasPrefix(line, "ERROR:"):
+			if errLine == "" {
+				errLine = strings.TrimSpace(strings.TrimPrefix(line, "ERROR:"))
+			}
+		case line != "" && !strings.HasPrefix(line, "["):
+			lastLine = line // e.g. the last line of a Python traceback
 		}
-
-		t.mu.Lock()
-		t.Progress = msg
-		t.mu.Unlock()
-
-		program.Send(msg)
+	}
+	if scanner.Err() != nil {
+		io.Copy(io.Discard, output) // keep draining so yt-dlp never blocks on a full pipe
 	}
 
-	cmdErr := cmd.Wait()
-	t.mu.Lock()
-	if cmdErr != nil {
-		if t.ctx.Err() != nil {
-			// Was cancelled/paused
-			if t.State == StatePaused {
-				t.mu.Unlock()
-				return
-			}
-			t.State = StateCancelled
-		} else {
-			t.State = StateFailed
-			// Prefer the captured yt-dlp error lines over the raw "exit status 1"
-			if len(errLines) > 0 {
-				t.Error = errors.New(strings.Join(errLines, "; "))
-			} else {
-				t.Error = fmt.Errorf("%w", cmdErr)
-			}
+	if err := cmd.Wait(); err != nil {
+		switch {
+		case errLine != "":
+			return errors.New(errLine)
+		case lastLine != "":
+			return errors.New(lastLine)
 		}
-	} else {
-		t.State = StateCompleted
-		t.CompletedAt = time.Now()
+		return err
 	}
-	t.mu.Unlock()
-
-	program.Send(types.DownloadCompleteMsg{
-		TaskID: t.ID,
-		Err:    cmdErr,
-	})
+	return nil
 }
 
-// Pause pauses the download by killing the process
+// finish records the outcome of a run unless the user paused or cancelled it meanwhile.
+func (t *Task) finish(ctx context.Context, err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.cancel = nil
+	if t.state != StateDownloading {
+		return
+	}
+	switch {
+	case err == nil:
+		t.state = StateCompleted
+		t.completedAt = time.Now()
+	case ctx.Err() != nil:
+		t.state = StatePaused
+	default:
+		t.state = StateFailed
+		t.err = err
+	}
+}
+
+// Pause stops a running download; yt-dlp keeps the partial file.
 func (t *Task) Pause() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if !ValidTransition(t.State, StatePaused) {
+	if !ValidTransition(t.state, StatePaused) {
 		return
 	}
-	t.State = StatePaused
+	t.state = StatePaused
 	if t.cancel != nil {
 		t.cancel()
 	}
 }
 
-// PrepareResume resets a paused or failed task back to StateQueued so the
-// manager can re-enqueue it without blocking the UI goroutine.
-// Returns true when the state was successfully reset.
+// PrepareResume moves a paused or failed task back to queued so the manager
+// can re-schedule it (yt-dlp continues partial files by default).
+// Returns true when the state was reset.
 func (t *Task) PrepareResume() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	switch t.State {
-	case StatePaused:
-		t.Opts.ContinueDL = true // yt-dlp --continue flag
-		t.State = StateQueued
-		return true
-	case StateFailed:
-		t.Error = nil
-		t.State = StateQueued
-		return true
+	if t.state != StatePaused && t.state != StateFailed {
+		return false
 	}
-	return false
+	t.state = StateQueued
+	t.err = nil
+	return true
 }
 
-// Cancel cancels the download
-func (t *Task) Cancel(deletePartial bool) {
+// Cancel stops the task for good.
+func (t *Task) Cancel() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if t.State == StateCompleted || t.State == StateCancelled {
-		return // already in terminal state
+	if t.state == StateCompleted || t.state == StateCancelled {
+		return
 	}
-
-	t.State = StateCancelled
+	t.state = StateCancelled
 	if t.cancel != nil {
 		t.cancel()
-	}
-
-	if deletePartial && t.OutputPath != "" {
-		os.Remove(t.OutputPath)
-		os.Remove(t.OutputPath + ".part")
 	}
 }
 
@@ -215,38 +193,46 @@ func (t *Task) Cancel(deletePartial bool) {
 func (t *Task) GetState() TaskState {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.State
+	return t.state
+}
+
+// GetTitle returns the video title, updated from yt-dlp once known (thread-safe)
+func (t *Task) GetTitle() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.title
 }
 
 // GetProgress returns the current progress (thread-safe)
-func (t *Task) GetProgress() types.ProgressMsg {
+func (t *Task) GetProgress() ytdlp.Progress {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.Progress
+	return t.progress
 }
 
 // GetError returns the task error (thread-safe)
 func (t *Task) GetError() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.Error
+	return t.err
 }
 
 // GetOutputPath returns the output path (thread-safe)
 func (t *Task) GetOutputPath() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.OutputPath
+	return t.outputPath
 }
 
 // GetCompletedAt returns the completion time (thread-safe)
 func (t *Task) GetCompletedAt() time.Time {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.CompletedAt
+	return t.completedAt
 }
 
 // String returns a human-readable description
 func (t *Task) String() string {
-	return fmt.Sprintf("[%s] %s (%s)", t.State.Icon(), t.Title, t.State)
+	state := t.GetState()
+	return fmt.Sprintf("[%s] %s (%s)", state.Icon(), t.GetTitle(), state)
 }

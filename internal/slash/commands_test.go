@@ -74,6 +74,16 @@ func TestRegistryMatchFuzzy(t *testing.T) {
 	}
 }
 
+func TestRegistryMatchPrefersExactName(t *testing.T) {
+	r := NewRegistry()
+	for _, name := range []string{"play", "download"} {
+		matches := r.Match(name)
+		if len(matches) == 0 || matches[0].Name != name {
+			t.Errorf("Match(%q) should rank the exact command first, got %v", name, matches)
+		}
+	}
+}
+
 func TestParseInput(t *testing.T) {
 	tests := []struct {
 		input    string

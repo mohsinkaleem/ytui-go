@@ -6,15 +6,35 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
+
+// searchLimit is the number of results fetched per search.
+const searchLimit = 25
+
+// outputTemplate names downloaded files; the ID keeps same-titled videos apart.
+const outputTemplate = "%(title)s [%(id)s].%(ext)s"
+
+// sortFilters maps sort orders to YouTube search filters ("sp"), limited to videos.
+var sortFilters = map[string]string{
+	"upload_date": "CAISAhAB",
+	"view_count":  "CAMSAhAB",
+	"rating":      "CAESAhAB",
+}
 
 // Client wraps yt-dlp binary calls
 type Client struct {
-	binaryPath  string
+	binaryPath string
+
+	mu          sync.RWMutex
 	cookiesFrom string // browser name for --cookies-from-browser
 	cookiesFile string // path to Netscape-format cookies.txt for --cookies
 }
@@ -28,77 +48,70 @@ func NewClient() (*Client, error) {
 	return &Client{binaryPath: path}, nil
 }
 
-// NewClientWithPath creates a client with a specific binary path
-func NewClientWithPath(path string) *Client {
-	return &Client{binaryPath: path}
-}
-
 // SetCookiesFrom configures the browser for --cookies-from-browser.
-// Valid values: "chrome", "firefox", "brave", "edge", "opera", "safari", "chromium", "vivaldi".
 // Pass an empty string to disable.
 func (c *Client) SetCookiesFrom(browser string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.cookiesFrom = browser
 }
 
 // CookiesFrom returns the currently configured cookies-from-browser value.
 func (c *Client) CookiesFrom() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.cookiesFrom
 }
 
 // SetCookiesFile configures a Netscape-format cookies.txt file path for --cookies.
-// This is used as a fallback when --cookies-from-browser fails or is unavailable.
-// Pass an empty string to disable.
+// It is only used when no browser is configured. Pass an empty string to disable.
 func (c *Client) SetCookiesFile(path string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.cookiesFile = path
 }
 
 // CookiesFile returns the currently configured cookies file path.
 func (c *Client) CookiesFile() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.cookiesFile
 }
 
-// Search runs a yt-dlp search and returns video info
-func (c *Client) Search(ctx context.Context, query string, sortBy string) ([]VideoInfo, error) {
-	args := []string{
-		fmt.Sprintf("ytsearch25:%s", query),
-		"--flat-playlist",
-		"-J",
-		"--extractor-args", "youtube:player_skip=webpage",
-		"--no-warnings",
+// cookieArgs returns the authentication flags for the configured cookies.
+func (c *Client) cookieArgs() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	switch {
+	case c.cookiesFrom != "":
+		return []string{"--cookies-from-browser", c.cookiesFrom}
+	case c.cookiesFile != "":
+		return []string{"--cookies", c.cookiesFile}
 	}
+	return nil
+}
 
-	if sortBy != "" && sortBy != "relevance" {
-		args = append(args, "--extractor-args", fmt.Sprintf("youtube:sort=%s", sortBy))
-	}
-
-	out, err := c.run(ctx, args...)
+// Search runs a YouTube search and returns flat video entries.
+func (c *Client) Search(ctx context.Context, query, sortBy string) ([]VideoInfo, error) {
+	info, err := c.fetchPlaylist(ctx, searchTarget(query, sortBy), "--playlist-end", strconv.Itoa(searchLimit))
 	if err != nil {
 		return nil, err
 	}
-
-	var result struct {
-		Entries []VideoInfo `json:"entries"`
-	}
-	if err := json.Unmarshal(out, &result); err != nil {
-		return nil, fmt.Errorf("parse search results: %w", err)
-	}
-
-	// Fill in URLs if missing
-	for i := range result.Entries {
-		if result.Entries[i].WebpageURL == "" && result.Entries[i].ID != "" {
-			result.Entries[i].WebpageURL = "https://www.youtube.com/watch?v=" + result.Entries[i].ID
-		}
-		if result.Entries[i].URL == "" {
-			result.Entries[i].URL = result.Entries[i].WebpageURL
-		}
-	}
-
-	return result.Entries, nil
+	return info.Entries, nil
 }
 
-// GetVideoMetadata fetches full metadata for a single video
-func (c *Client) GetVideoMetadata(ctx context.Context, url string) (*VideoInfo, error) {
-	out, err := c.run(ctx, "-j", "--no-download", "--no-warnings", url)
+// searchTarget returns the yt-dlp input for a search: ytsearch for relevance,
+// otherwise YouTube's results page with a sort filter.
+func searchTarget(query, sortBy string) string {
+	if sp, ok := sortFilters[sortBy]; ok {
+		return "https://www.youtube.com/results?search_query=" + url.QueryEscape(query) + "&sp=" + sp
+	}
+	return fmt.Sprintf("ytsearch%d:%s", searchLimit, query)
+}
+
+// GetVideoMetadata fetches full metadata (including formats) for a single video.
+func (c *Client) GetVideoMetadata(ctx context.Context, videoURL string) (*VideoInfo, error) {
+	out, err := c.run(ctx, []string{"-j", "--no-playlist", "--no-warnings"}, videoURL)
 	if err != nil {
 		return nil, err
 	}
@@ -107,15 +120,17 @@ func (c *Client) GetVideoMetadata(ctx context.Context, url string) (*VideoInfo, 
 	if err := json.Unmarshal(out, &info); err != nil {
 		return nil, fmt.Errorf("parse video metadata: %w", err)
 	}
-	if info.URL == "" {
-		info.URL = url
-	}
 	return &info, nil
 }
 
-// GetPlaylistMetadata fetches playlist metadata with flat entries
-func (c *Client) GetPlaylistMetadata(ctx context.Context, url string) (*PlaylistInfo, error) {
-	out, err := c.run(ctx, "--flat-playlist", "-J", "--no-warnings", url)
+// GetPlaylistMetadata fetches playlist metadata with flat entries.
+func (c *Client) GetPlaylistMetadata(ctx context.Context, playlistURL string) (*PlaylistInfo, error) {
+	return c.fetchPlaylist(ctx, playlistURL)
+}
+
+func (c *Client) fetchPlaylist(ctx context.Context, target string, extra ...string) (*PlaylistInfo, error) {
+	args := append([]string{"--flat-playlist", "-J", "--no-warnings"}, extra...)
+	out, err := c.run(ctx, args, target)
 	if err != nil {
 		return nil, err
 	}
@@ -124,35 +139,29 @@ func (c *Client) GetPlaylistMetadata(ctx context.Context, url string) (*Playlist
 	if err := json.Unmarshal(out, &info); err != nil {
 		return nil, fmt.Errorf("parse playlist metadata: %w", err)
 	}
-
-	// Fill in URLs
 	for i := range info.Entries {
-		if info.Entries[i].WebpageURL == "" && info.Entries[i].ID != "" {
-			info.Entries[i].WebpageURL = "https://www.youtube.com/watch?v=" + info.Entries[i].ID
-		}
-		if info.Entries[i].URL == "" {
-			info.Entries[i].URL = info.Entries[i].WebpageURL
-		}
+		info.Entries[i].WebpageURL = entryURL(info.Entries[i])
 	}
-
 	return &info, nil
 }
 
-// ListFormats fetches and returns all available formats for a URL
-func (c *Client) ListFormats(ctx context.Context, url string) ([]Format, error) {
-	info, err := c.GetVideoMetadata(ctx, url)
-	if err != nil {
-		return nil, err
+// entryURL returns the best URL for a flat playlist entry.
+func entryURL(e VideoInfo) string {
+	switch {
+	case e.WebpageURL != "":
+		return e.WebpageURL
+	case strings.HasPrefix(e.URL, "http"):
+		return e.URL
+	case e.ID != "":
+		return "https://www.youtube.com/watch?v=" + e.ID
 	}
-	return info.Formats, nil
+	return e.URL
 }
 
-// Download starts a download and returns the command + stderr pipe for progress.
-// yt-dlp writes --progress-template output to stderr, so callers must read
-// from the returned ReadCloser to receive progress lines.
-func (c *Client) Download(ctx context.Context, url, formatID string, opts DownloadOpts) (*exec.Cmd, io.ReadCloser, error) {
+// Download starts a download and returns the command plus a pipe carrying its
+// combined stdout/stderr, which includes the --progress-template lines.
+func (c *Client) Download(ctx context.Context, videoURL, formatID string, opts DownloadOpts) (*exec.Cmd, io.ReadCloser, error) {
 	args := []string{
-		url,
 		"--newline",
 		"--progress-template", progressTemplate,
 		"--no-warnings",
@@ -166,11 +175,8 @@ func (c *Client) Download(ctx context.Context, url, formatID string, opts Downlo
 		}
 	}
 
-	if opts.OutputTemplate != "" {
-		args = append(args, "-o", expandHome(opts.OutputTemplate))
-	} else if opts.OutputDir != "" {
-		expanded := expandHome(opts.OutputDir)
-		args = append(args, "-o", fmt.Sprintf("%s/%%(title)s.%%(ext)s", expanded))
+	if opts.OutputDir != "" {
+		args = append(args, "-o", filepath.Join(expandHome(opts.OutputDir), outputTemplate))
 	}
 
 	if opts.EmbedSubs {
@@ -182,17 +188,16 @@ func (c *Client) Download(ctx context.Context, url, formatID string, opts Downlo
 	if opts.EmbedChapters {
 		args = append(args, "--embed-chapters")
 	}
-	if opts.ContinueDL {
-		args = append(args, "--continue")
-	}
 
-	if c.cookiesFrom != "" {
-		args = append(args, "--cookies-from-browser", c.cookiesFrom)
-	} else if c.cookiesFile != "" {
-		args = append(args, "--cookies", c.cookiesFile)
-	}
+	args = append(args, c.cookieArgs()...)
+	args = append(args, "--", videoURL)
 
 	cmd := exec.CommandContext(ctx, c.binaryPath, args...)
+	// Interrupt instead of kill so yt-dlp stops ffmpeg and leaves resumable .part files.
+	if runtime.GOOS != "windows" {
+		cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+	}
+	cmd.WaitDelay = 5 * time.Second
 
 	// yt-dlp may write --progress-template lines to stdout or stderr
 	// depending on version and flags. Merge both into a single pipe
@@ -217,18 +222,9 @@ func (c *Client) Download(ctx context.Context, url, formatID string, opts Downlo
 	return cmd, r, nil
 }
 
-// BinaryPath returns the yt-dlp binary path
-func (c *Client) BinaryPath() string {
-	return c.binaryPath
-}
-
-// run executes yt-dlp with args and returns stdout
-func (c *Client) run(ctx context.Context, args ...string) ([]byte, error) {
-	if c.cookiesFrom != "" {
-		args = append([]string{"--cookies-from-browser", c.cookiesFrom}, args...)
-	} else if c.cookiesFile != "" {
-		args = append([]string{"--cookies", c.cookiesFile}, args...)
-	}
+// run executes yt-dlp with args followed by target and returns stdout.
+func (c *Client) run(ctx context.Context, args []string, target string) ([]byte, error) {
+	args = append(append(c.cookieArgs(), args...), "--", target)
 	cmd := exec.CommandContext(ctx, c.binaryPath, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -286,8 +282,8 @@ func IsURL(input string) bool {
 		strings.Contains(input, "youtu.be/")
 }
 
-// IsPlaylistURL checks if URL is a playlist
-func IsPlaylistURL(url string) bool {
-	return strings.Contains(url, "playlist?list=") ||
-		strings.Contains(url, "&list=")
+// IsPlaylistURL reports whether the URL carries a playlist ("list" query parameter).
+func IsPlaylistURL(s string) bool {
+	u, err := url.Parse(strings.TrimSpace(s))
+	return err == nil && u.Query().Get("list") != ""
 }

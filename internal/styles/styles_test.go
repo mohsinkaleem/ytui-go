@@ -74,3 +74,30 @@ func TestThemeNames(t *testing.T) {
 		t.Error("ThemeNames() should return at least one theme")
 	}
 }
+
+func TestTruncate(t *testing.T) {
+	tests := []struct {
+		in    string
+		width int
+		want  string
+	}{
+		{"hello", 10, "hello"},
+		{"hello world", 8, "hello w…"},
+		{"日本語のタイトル", 7, "日本語…"},
+		{"x", 0, "x"},
+	}
+	for _, tt := range tests {
+		if got := Truncate(tt.in, tt.width); got != tt.want {
+			t.Errorf("Truncate(%q, %d) = %q, want %q", tt.in, tt.width, got, tt.want)
+		}
+	}
+}
+
+func TestTruncateLeft(t *testing.T) {
+	if got := TruncateLeft("/a/b/c/file.mp4", 10); got != "…/file.mp4" {
+		t.Errorf("TruncateLeft = %q, want %q", got, "…/file.mp4")
+	}
+	if got := TruncateLeft("short", 10); got != "short" {
+		t.Errorf("TruncateLeft = %q, want unchanged", got)
+	}
+}

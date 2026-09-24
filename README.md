@@ -7,19 +7,21 @@ Built with the [Charm](https://charm.sh) stack (bubbletea + lipgloss + bubbles).
 ## Features
 
 - **Search** — full-text YouTube search with sort options (relevance, upload date, view count, rating)
-- **Format picker** — browse video/audio formats with tabbed UI, or enter custom format strings
-- **Download queue** — concurrent downloads with progress bars, pause/resume/cancel
+- **Format picker** — browse video/audio formats in an aligned table, pick a preset, or enter any yt-dlp format selector
+- **Download queue** — concurrent downloads with progress bars, pause/resume/cancel/retry
+- **Resumable** — unfinished downloads are saved on quit and can be continued with `/resume`
 - **Playlist support** — browse and batch-download entire playlists
 - **mpv integration** — stream videos directly in mpv
-- **Slash commands** — `/download`, `/play`, `/playlist`, `/theme`, and more
-- **Theming** — ships with Catppuccin Mocha, Catppuccin Latte, and Monochrome themes
-- **Persistence** — search history, download records, and settings stored via bbolt
+- **Slash commands** — `/download`, `/play`, `/playlist`, `/theme`, `/cookies`, and more
+- **Theming** — Catppuccin Mocha & Latte, Nord, Gruvbox and Monochrome
+- **Persistence** — history, download records, and settings stored via bbolt
 - **Keyboard-driven** — full keyboard navigation with contextual status bar hints
-- **Multi-select** — select multiple videos for batch operations
+- **Multi-select** — select multiple videos for batch downloads
 
 ## Prerequisites
 
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp#installation) in your `$PATH`
+- [ffmpeg](https://ffmpeg.org/) (recommended, needed to merge separate video and audio streams)
 - [mpv](https://mpv.io/) (optional, for streaming playback)
 
 ## Installation
@@ -55,10 +57,12 @@ make build
 
 ```sh
 ytui                         # launch the TUI
-ytui --theme latte           # launch with a specific theme
-ytui --download-dir ~/Videos # set download directory
+ytui --theme latte           # use a theme for this session
+ytui --download-dir ~/Videos # download to a folder for this session
 ytui --version               # print version
 ```
+
+Files are saved as `Title [video-id].ext`, so videos with the same title never overwrite each other.
 
 ### Search & Browse
 
@@ -74,92 +78,112 @@ Type a search query and press **Enter** to search YouTube, or paste a URL direct
 
 | Key | Action |
 |---|---|
-| `ctrl+c` | Quit |
+| `ctrl+c` | Quit (running downloads are saved for `/resume`) |
+| `g` | Open the download queue (from lists, when downloads exist) |
 
 #### Search Screen
 
 | Key | Action |
 |---|---|
 | `Enter` | Search / open URL |
-| `Tab` / `Shift+Tab` | Cycle sort option |
+| `Tab` / `Shift+Tab` | Cycle sort option (completes a command while the command list is open) |
 | `ctrl+s` | Toggle embed subtitles |
-| `ctrl+m` | Toggle embed metadata |
+| `ctrl+t` | Toggle embed metadata |
 | `ctrl+j` | Toggle embed chapters |
-| `Up` / `Down` | Navigate search history |
-| `/command` | Slash commands |
+| `Up` / `Down` | Navigate history |
+| `Esc` | Clear the input |
+| `/` | Slash commands |
 
 #### Video List
 
 | Key | Action |
 |---|---|
 | `Enter` | Open format picker |
-| `d` | Quick download (best format) |
+| `d` | Quick download (best format) — all selected videos, or the highlighted one |
 | `p` | Play in mpv |
 | `Space` | Toggle multi-select |
 | `a` | Select / deselect all |
 | `ctrl+y` | Copy URL to clipboard |
 | `/` | Filter list |
-| `b` / `Esc` | Back |
+| `b` | Back |
+| `Esc` | Clear filter, or back |
 
 #### Format List
 
 | Key | Action |
 |---|---|
-| `Enter` | Download selected format |
+| `Enter` | Download selected format (video-only formats get the best audio merged in) |
 | `p` | Play selected format in mpv |
 | `Tab` / `Shift+Tab` | Switch tab (Video / Audio / Custom) |
-| `b` / `Esc` | Back |
+| `Up` / `Down` | Pick a preset (Custom tab) |
+| `b` | Back |
+| `Esc` | Home |
 
 #### Download Screen
 
 | Key | Action |
 |---|---|
+| `Up` / `Down` | Select a task in the queue |
 | `p` | Pause / Resume |
-| `c` | Cancel current download |
-| `r` | Retry failed download |
-| `s` | Skip current download |
-| `b` / `Esc` | Back (when all done) |
+| `c` | Cancel |
+| `r` / `R` | Retry failed download / all failed downloads |
+| `s` | Skip failed download |
+| `b` | Back |
+| `Esc` | Home |
+
+#### Resume List
+
+| Key | Action |
+|---|---|
+| `Enter` | Resume selected download |
+| `d` | Resume all |
+| `x` | Delete record |
+| `b` / `Esc` | Back |
 
 ### Slash Commands
 
-Type `/` followed by a command name in the search input:
+Type `/` in the search input to list all commands:
 
 | Command | Description |
 |---|---|
 | `/download <url>` | Quick-download with best format |
-| `/playlist <url>` | Open playlist browser |
 | `/play <url>` | Stream in mpv |
+| `/playlist <url>` | Open playlist browser |
+| `/downloads` | Show the download queue |
 | `/resume` | Show unfinished downloads |
-| `/theme <name>` | Switch theme (`mocha`, `latte`, `monochrome`) |
-| `/clear` | Clear search history |
-| `/help` | Toggle help |
+| `/theme [name]` | Pick or switch theme |
+| `/downloaddir [path]` | Show or set the download folder |
+| `/cookies [browser\|path\|off]` | Use browser cookies (e.g. `chrome`, `firefox:Profile 1`) or a cookies.txt |
+| `/clear` | Clear history |
+| `/help` | List all commands |
 | `/exit` | Exit app |
 
 ## Themes
 
-ytui ships with three built-in themes:
+ytui ships with five built-in themes:
 
 - **mocha** — Catppuccin Mocha (default, dark)
 - **latte** — Catppuccin Latte (light)
-- **monochrome** — Minimal black & white
+- **nord** — Nord (dark)
+- **gruvbox** — Gruvbox (dark)
+- **monochrome** — Minimal high contrast
 
-Switch at runtime with `/theme <name>` or at launch with `--theme <name>`.
+Switch at runtime with `/theme` (saved) or at launch with `--theme <name>` (this session only).
 
 ## Project Structure
 
 ```
 cmd/ytui/             CLI entry point (cobra)
 internal/
-  app/                Root model, Update, View, key bindings
-  models/             Sub-models: search, video list, format list, download, player
+  app/                Root model, Update, View, status bar key hints
+  models/             Sub-models: search, video list, format list, download, resume, player
   types/              State constants, message types, shared data types
-  styles/             Lipgloss styles and theme system
+  styles/             Lipgloss styles, theme system, text truncation helpers
   slash/              Slash command registry with fuzzy matching
   ytdlp/              yt-dlp binary wrapper (search, metadata, formats, download, progress)
   download/           Download manager with worker pool, task lifecycle, state machine
-  player/             mpv integration
-  store/              bbolt persistence (search history, downloads, settings)
-  utils/              Manager wrappers and XDG path helpers
+  store/              bbolt persistence (history, downloads, settings)
+  utils/              Cancellable metadata fetcher, mpv player, path helpers
 ```
 
 ## Architecture
@@ -169,8 +193,8 @@ ytui follows the [Elm architecture](https://guide.elm-lang.org/architecture/) vi
 - **Single root model** with flat composition — no nested `tea.Model` routing
 - **String-typed state machine** — explicit state transitions in `update.go`
 - **Typed messages as intent** — every action is a message, not a method call
-- **Worker pool** for concurrent downloads with proper state machine transitions
-- **Context-aware status bar** — key hints adapt to current state
+- **Worker pool** for concurrent downloads; the UI polls task state, so downloads never block on the UI (e.g. while mpv has the terminal)
+- **Context-aware status bar** — key hints adapt to the current screen and task state
 
 ## Development
 
@@ -191,7 +215,6 @@ make clean       # remove build artifacts
 | [bubbletea](https://github.com/charmbracelet/bubbletea) | Elm-architecture TUI framework |
 | [lipgloss](https://github.com/charmbracelet/lipgloss) | Declarative terminal styling |
 | [bubbles](https://github.com/charmbracelet/bubbles) | Stock components (list, textinput, progress, spinner) |
-| [bubblezone](https://github.com/lrstanley/bubblezone) | Mouse click zones |
 | [cobra](https://github.com/spf13/cobra) | CLI flags and subcommands |
 | [fuzzy](https://github.com/sahilm/fuzzy) | Slash command autocomplete |
 | [clipboard](https://github.com/atotto/clipboard) | Clipboard support |
