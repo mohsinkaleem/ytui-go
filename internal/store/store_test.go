@@ -15,9 +15,13 @@ func setupTestStore(t *testing.T) (*Store, func()) {
 	if err != nil {
 		t.Fatalf("failed to create test store: %v", err)
 	}
-	return s, func() {
-		s.Close()
-		os.RemoveAll(dir)
+	return s, func() { _ = s.Close() }
+}
+
+func mustSaveDownload(t *testing.T, s *Store, r DownloadRecord) {
+	t.Helper()
+	if err := s.SaveDownload(r); err != nil {
+		t.Fatalf("SaveDownload failed: %v", err)
 	}
 }
 
@@ -91,7 +95,9 @@ func TestClearHistory(t *testing.T) {
 	s, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	s.SaveSearch(SearchEntry{URL: "test", Title: "test", Timestamp: time.Now()})
+	if err := s.SaveSearch(SearchEntry{URL: "test", Title: "test", Timestamp: time.Now()}); err != nil {
+		t.Fatalf("SaveSearch failed: %v", err)
+	}
 
 	err := s.ClearHistory()
 	if err != nil {
@@ -155,7 +161,7 @@ func TestUpdateDownloadState(t *testing.T) {
 		State:     "downloading",
 		CreatedAt: time.Now(),
 	}
-	s.SaveDownload(record)
+	mustSaveDownload(t, s, record)
 
 	// Update to completed
 	err := s.UpdateDownloadState("update-test", "completed")
@@ -184,7 +190,7 @@ func TestGetAllDownloads(t *testing.T) {
 
 	// Save multiple records with different creation times
 	for i := 0; i < 3; i++ {
-		s.SaveDownload(DownloadRecord{
+		mustSaveDownload(t, s, DownloadRecord{
 			ID:        string(rune('a' + i)),
 			Title:     "Video " + string(rune('A'+i)),
 			State:     "completed",
@@ -210,11 +216,9 @@ func TestGetIncomplete(t *testing.T) {
 	s, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	s.SaveDownload(DownloadRecord{ID: "1", State: "completed", CreatedAt: time.Now()})
-	s.SaveDownload(DownloadRecord{ID: "2", State: "downloading", CreatedAt: time.Now()})
-	s.SaveDownload(DownloadRecord{ID: "3", State: "cancelled", CreatedAt: time.Now()})
-	s.SaveDownload(DownloadRecord{ID: "4", State: "failed", CreatedAt: time.Now()})
-	s.SaveDownload(DownloadRecord{ID: "5", State: "paused", CreatedAt: time.Now()})
+	for i, state := range []string{"completed", "downloading", "cancelled", "failed", "paused"} {
+		mustSaveDownload(t, s, DownloadRecord{ID: string(rune('1' + i)), State: state, CreatedAt: time.Now()})
+	}
 
 	incomplete, err := s.GetIncomplete()
 	if err != nil {
@@ -230,7 +234,7 @@ func TestDeleteDownload(t *testing.T) {
 	s, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	s.SaveDownload(DownloadRecord{ID: "del-test", Title: "Delete Me", State: "completed", CreatedAt: time.Now()})
+	mustSaveDownload(t, s, DownloadRecord{ID: "del-test", Title: "Delete Me", State: "completed", CreatedAt: time.Now()})
 
 	err := s.DeleteDownload("del-test")
 	if err != nil {

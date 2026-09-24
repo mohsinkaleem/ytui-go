@@ -112,7 +112,7 @@ func (t *Task) run(ctx context.Context) error {
 		}
 	}
 	if scanner.Err() != nil {
-		io.Copy(io.Discard, output) // keep draining so yt-dlp never blocks on a full pipe
+		_, _ = io.Copy(io.Discard, output) // keep draining so yt-dlp never blocks on a full pipe
 	}
 
 	if err := cmd.Wait(); err != nil {

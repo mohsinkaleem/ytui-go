@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -19,6 +20,10 @@ import (
 var version = "dev"
 
 func main() {
+	if info, ok := debug.ReadBuildInfo(); ok && version == "dev" && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		version = info.Main.Version // set by `go install ...@vX.Y.Z`
+	}
+
 	rootCmd := &cobra.Command{
 		Use:           "ytui",
 		Short:         "A beautiful TUI wrapper for yt-dlp",

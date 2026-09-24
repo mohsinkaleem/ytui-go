@@ -27,6 +27,7 @@ Thanks for your interest in contributing! Here's how to get started.
    make fmt       # format code
    make vet       # static analysis
    make test      # run tests
+   make lint      # golangci-lint (v2)
    ```
 4. Open a pull request against `main`.
 
@@ -47,6 +48,8 @@ Thanks for your interest in contributing! Here's how to get started.
 - `internal/ytdlp/` — yt-dlp binary wrapper
 - `internal/download/` — Download manager and task lifecycle
 - `internal/store/` — bbolt persistence layer
+- `internal/slash/` — Slash command registry and fuzzy matching
+- `internal/utils/` — yt-dlp fetch commands and path helpers
 
 ## Reporting Issues
 

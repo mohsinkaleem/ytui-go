@@ -190,5 +190,5 @@ func (m *Manager) persistTask(task *Task) {
 	if err := task.GetError(); err != nil {
 		record.Error = err.Error()
 	}
-	m.store.SaveDownload(record)
+	_ = m.store.SaveDownload(record)
 }

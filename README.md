@@ -1,5 +1,9 @@
 # ytui
 
+[![CI](https://github.com/mohsinkaleem/ytui-go/actions/workflows/ci.yml/badge.svg)](https://github.com/mohsinkaleem/ytui-go/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/mohsinkaleem/ytui-go)](https://github.com/mohsinkaleem/ytui-go/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A beautiful terminal UI for [yt-dlp](https://github.com/yt-dlp/yt-dlp) — search, browse, download, and stream YouTube videos without leaving your terminal.
 
 Built with the [Charm](https://charm.sh) stack (bubbletea + lipgloss + bubbles).

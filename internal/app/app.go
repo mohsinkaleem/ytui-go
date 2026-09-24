@@ -141,7 +141,7 @@ func (m *Model) downloadOpts() ytdlp.DownloadOpts {
 func (m *Model) saveSettings() {
 	m.syncSearch()
 	if m.Store != nil {
-		m.Store.SaveSettings(m.Settings)
+		_ = m.Store.SaveSettings(m.Settings)
 	}
 }
 

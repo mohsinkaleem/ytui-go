@@ -508,7 +508,7 @@ func (m Model) updateResumeList(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "x":
 		if rec := rl.SelectedItem(); rec != nil {
 			if m.Store != nil {
-				m.Store.DeleteDownload(rec.ID)
+				_ = m.Store.DeleteDownload(rec.ID)
 			}
 			rl.RemoveSelected()
 			if len(rl.Items) == 0 {
@@ -654,7 +654,7 @@ func (m *Model) remember(input string) {
 	case ytdlp.IsURL(input):
 		kind = "url"
 	}
-	m.Store.SaveSearch(store.SearchEntry{URL: input, Title: input, Timestamp: time.Now(), Type: kind})
+	_ = m.Store.SaveSearch(store.SearchEntry{URL: input, Title: input, Timestamp: time.Now(), Type: kind})
 }
 
 // runCommand executes a slash command such as "/theme latte".
@@ -742,7 +742,9 @@ func (m Model) runCommand(input string) (Model, tea.Cmd) {
 		s.ClearInput()
 		s.History = nil
 		if m.Store != nil {
-			m.Store.ClearHistory()
+			if err := m.Store.ClearHistory(); err != nil {
+				return m.withError("Could not clear saved history: " + err.Error())
+			}
 		}
 		return m.withToast("History cleared", false)
 	}

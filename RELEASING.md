@@ -2,7 +2,7 @@
 
 This document covers:
 1. Building and uploading binary assets to a GitHub Release
-2. Publishing a Homebrew tap so users can run `brew install ytui`
+2. (Optional) Publishing a Homebrew tap so users can run `brew install ytui`
 
 ---
 
@@ -16,122 +16,33 @@ This document covers:
 brew install goreleaser
 ```
 
-### Add a `.goreleaser.yaml` to the repo root
+### What's already set up
 
-```yaml
-# .goreleaser.yaml
-version: 2
+- [.goreleaser.yml](.goreleaser.yml) — builds linux/darwin/windows for amd64 and arm64, archives them with `README.md` and `LICENSE`, writes `checksums.txt`
+- [.github/workflows/release.yml](.github/workflows/release.yml) — runs the tests and GoReleaser when a `v*` tag is pushed
+- [.github/workflows/ci.yml](.github/workflows/ci.yml) — build, vet, test (Linux + macOS), golangci-lint and `goreleaser check` on every push and PR to `main`
 
-project_name: ytui
+### Before tagging
 
-before:
-  hooks:
-    - go mod tidy
-
-builds:
-  - id: ytui
-    main: ./cmd/ytui
-    binary: ytui
-    env:
-      - CGO_ENABLED=0
-    goos:
-      - linux
-      - darwin
-      - windows
-    goarch:
-      - amd64
-      - arm64
-    ldflags:
-      - -s -w -X main.version={{.Version}}
-
-archives:
-  - id: ytui
-    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
-    format_overrides:
-      - goos: windows
-        formats: [zip]
-    files:
-      - README.md
-      - LICENSE
-
-checksum:
-  name_template: checksums.txt
-  algorithm: sha256
-
-changelog:
-  sort: asc
-  filters:
-    exclude:
-      - "^docs:"
-      - "^test:"
-      - "^chore:"
-
-brews:
-  - name: ytui
-    repository:
-      owner: mohsinkaleem        # your GitHub username
-      name: homebrew-ytui        # the tap repo (created in step 2)
-      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
-    homepage: https://github.com/mohsinkaleem/ytui-go
-    description: "Beautiful terminal UI for yt-dlp — search, download, and stream YouTube videos."
-    license: MIT
-    dependencies:
-      - name: yt-dlp
-      - name: mpv
-        type: optional
-    test: |
-      system "#{bin}/ytui", "--version"
-    install: |
-      bin.install "ytui"
+```sh
+make fmt vet test
+golangci-lint run ./...
+goreleaser check
+goreleaser release --snapshot --clean   # builds every archive into dist/ without publishing
 ```
 
-### Create a GitHub Release (automated via CI)
-
-Add `.github/workflows/release.yml`:
-
-```yaml
-name: Release
-
-on:
-  push:
-    tags:
-      - "v*"
-
-permissions:
-  contents: write
-
-jobs:
-  release:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0   # needed for git describe
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - uses: goreleaser/goreleaser-action@v6
-        with:
-          version: latest
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
-```
-
-`GITHUB_TOKEN` is provided automatically by GitHub Actions.  
-`TAP_GITHUB_TOKEN` is a [Personal Access Token](https://github.com/settings/tokens/new) (classic, `repo` scope) that has write access to the `homebrew-ytui` tap repo — add it as a repository secret.
+`GITHUB_TOKEN` is provided automatically by GitHub Actions, so no secrets are needed.
 
 ### Tag and trigger a release
 
 ```sh
-git tag v1.0.0
+git tag -a v1.0.0 -m "v1.0.0"
 git push origin v1.0.0
 ```
 
-The workflow runs, cross-compiles for all platforms, creates the GitHub Release, uploads archives + `checksums.txt`, and opens a PR / pushes directly to the tap repo with an updated formula.
+The workflow runs the tests, cross-compiles for all platforms, and publishes the GitHub Release with the archives and `checksums.txt`. Tags with a suffix such as `v1.1.0-rc.1` are marked as pre-releases.
+
+Once the tag is pushed, `go install github.com/mohsinkaleem/ytui-go/cmd/ytui@v1.0.0` also works, and `ytui --version` reports the tag.
 
 ---
 
@@ -141,13 +52,12 @@ If you want to release from your local machine instead:
 
 ```sh
 export GITHUB_TOKEN=<your-token>
-export TAP_GITHUB_TOKEN=<your-tap-token>
 goreleaser release --clean
 ```
 
 ---
 
-## 2. Setting up the Homebrew tap
+## 2. Setting up the Homebrew tap (optional, not configured yet)
 
 A **tap** is just a GitHub repository whose name starts with `homebrew-`.
 
@@ -158,7 +68,18 @@ A **tap** is just a GitHub repository whose name starts with `homebrew-`.
 3. Visibility: **Public**
 4. Initialize with a README
 
-That's it. GoReleaser will push the generated formula file (`ytui.rb`) into this repo automatically on each release.
+### Wire it into the release
+
+1. Create a [Personal Access Token](https://github.com/settings/tokens/new) with write access to `homebrew-ytui` and add it to this repo's secrets as `TAP_GITHUB_TOKEN`.
+2. Add a Homebrew section to `.goreleaser.yml` pointing at `mohsinkaleem/homebrew-ytui` with `token: "{{ .Env.TAP_GITHUB_TOKEN }}"` and `yt-dlp` as a dependency (see the GoReleaser Homebrew docs).
+3. Pass the secret to GoReleaser in `release.yml`:
+   ```yaml
+   env:
+     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+     TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+   ```
+
+GoReleaser then pushes the generated formula into the tap on each release.
 
 ### What the formula looks like (generated by GoReleaser)
 
@@ -238,11 +159,9 @@ Requires [yt-dlp](https://github.com/yt-dlp/yt-dlp) and optionally [mpv](https:/
 
 | Step | Action |
 |------|--------|
-| 1 | Add `.goreleaser.yaml` to the repo root |
-| 2 | Add `.github/workflows/release.yml` |
-| 3 | Create the `homebrew-ytui` public repo on GitHub |
-| 4 | Add `TAP_GITHUB_TOKEN` as a repository secret |
-| 5 | Push a `v*` tag to trigger the release |
-| 6 | Verify the release appears at `github.com/mohsinkaleem/ytui-go/releases` |
-| 7 | Verify the formula was pushed to `github.com/mohsinkaleem/homebrew-ytui` |
-| 8 | Test with `brew install mohsinkaleem/ytui/ytui` on a clean machine |
+| 1 | Make sure CI is green on `main` |
+| 2 | Run the "Before tagging" checks locally |
+| 3 | Push a `v*` tag to trigger the release |
+| 4 | Verify the release appears at `github.com/mohsinkaleem/ytui-go/releases` |
+| 5 | *(Homebrew)* Create `homebrew-ytui`, add `TAP_GITHUB_TOKEN`, and add the Homebrew section to `.goreleaser.yml` |
+| 6 | *(Homebrew)* Test with `brew install mohsinkaleem/ytui/ytui` on a clean machine |
