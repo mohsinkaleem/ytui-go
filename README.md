@@ -10,10 +10,6 @@ Built with the [Charm](https://charm.sh) stack (bubbletea + lipgloss + bubbles).
 
 ![ytui demo](assets/demo.gif)
 
-```sh
-brew install mohsinkaleem/tap/ytui
-```
-
 ## Features
 
 - **Search** — full-text YouTube search with sort options (relevance, upload date, view count, rating)
