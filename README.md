@@ -8,6 +8,12 @@ A beautiful terminal UI for [yt-dlp](https://github.com/yt-dlp/yt-dlp) — searc
 
 Built with the [Charm](https://charm.sh) stack (bubbletea + lipgloss + bubbles).
 
+![ytui demo](assets/demo.gif)
+
+```sh
+brew install mohsinkaleem/tap/ytui
+```
+
 ## Features
 
 - **Search** — full-text YouTube search with sort options (relevance, upload date, view count, rating)
@@ -30,11 +36,27 @@ Built with the [Charm](https://charm.sh) stack (bubbletea + lipgloss + bubbles).
 
 ## Installation
 
-### Pre-built binaries
+### Homebrew (macOS / Linux)
 
-Download the latest release for your platform from the [Releases](https://github.com/mohsinkaleem/ytui-go/releases) page.
+```sh
+brew install mohsinkaleem/tap/ytui
+```
 
-### From source
+This also installs yt-dlp. Add `ffmpeg` and `mpv` with `brew install ffmpeg mpv`.
+
+### Install script (macOS / Linux)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mohsinkaleem/ytui-go/main/scripts/install.sh | sh
+```
+
+The script downloads the latest release, verifies its checksum and installs `ytui` to `/usr/local/bin`, or `~/.local/bin` if that isn't writable. Set `YTUI_INSTALL_DIR` to pick another folder or `YTUI_VERSION` (e.g. `v1.0.1`) to pin a release.
+
+### Windows
+
+Download `ytui_<version>_windows_amd64.zip` (or `arm64`) from the [Releases](https://github.com/mohsinkaleem/ytui-go/releases) page, extract `ytui.exe` and put it somewhere on your `PATH`.
+
+### Go
 
 Requires [Go](https://go.dev/dl/) 1.25+.
 
@@ -42,19 +64,16 @@ Requires [Go](https://go.dev/dl/) 1.25+.
 go install github.com/mohsinkaleem/ytui-go/cmd/ytui@latest
 ```
 
-Or clone and build manually:
+### Pre-built binaries
+
+Archives for macOS, Linux and Windows (amd64 and arm64) are attached to every [release](https://github.com/mohsinkaleem/ytui-go/releases), along with `checksums.txt`. On macOS, a binary downloaded through a browser is quarantined by Gatekeeper; clear the flag with `xattr -d com.apple.quarantine ytui`.
+
+### From source
 
 ```sh
 git clone https://github.com/mohsinkaleem/ytui-go.git
 cd ytui-go
 make install
-```
-
-### Build locally
-
-```sh
-make build
-./bin/ytui
 ```
 
 ## Usage
@@ -232,3 +251,5 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for gui
 ## License
 
 [MIT](LICENSE)
+
+ytui is not affiliated with YouTube or Google. Only download content you have the right to download.
