@@ -29,12 +29,43 @@ checksum:
 
 changelog:
   sort: asc
+  abbrev: -1
   filters:
     exclude:
       - "^docs:"
       - "^test:"
       - "^ci:"
       - "^chore:"
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: Other changes
+      order: 999
+
+homebrew_casks:
+  - name: ytui
+    description: "Terminal UI for yt-dlp: search, download and stream YouTube videos"
+    homepage: "https://github.com/mohsinkaleem/ytui-go"
+    repository:
+      owner: mohsinkaleem
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    skip_upload: auto # don't publish pre-releases to the tap
+    dependencies:
+      - formula: yt-dlp
+    caveats: "Recommended: ffmpeg to merge video and audio streams, mpv to stream videos (brew install ffmpeg mpv)"
+    hooks:
+      post:
+        # The binaries are not notarized, so drop the quarantine flag macOS
+        # would otherwise block them with.
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/ytui"]
+          end
 
 release:
   github:
@@ -42,3 +73,17 @@ release:
     name: ytui-go
   draft: false
   prerelease: auto
+  footer: |
+    ## Install
+
+    ```sh
+    brew install mohsinkaleem/tap/ytui
+    ```
+
+    or
+
+    ```sh
+    curl -fsSL https://raw.githubusercontent.com/mohsinkaleem/ytui-go/main/scripts/install.sh | sh
+    ```
+
+    ytui needs [yt-dlp](https://github.com/yt-dlp/yt-dlp#installation); [ffmpeg](https://ffmpeg.org/) and [mpv](https://mpv.io/) are recommended.
